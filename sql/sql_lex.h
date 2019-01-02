@@ -33,6 +33,10 @@
 #include "sql_tvc.h"
 #include "item.h"
 
+/* Used for flags of nesting constructs */
+#define SELECT_NESTING_MAP_SIZE 64
+typedef Bitmap<SELECT_NESTING_MAP_SIZE> nesting_map;
+
 /* YACC and LEX Definitions */
 
 
@@ -177,6 +181,16 @@ enum enum_view_suid
   VIEW_SUID_DEFINER= 1,
   VIEW_SUID_DEFAULT= 2
 };
+
+
+enum plsql_cursor_attr_t
+{
+  PLSQL_CURSOR_ATTR_ISOPEN,
+  PLSQL_CURSOR_ATTR_FOUND,
+  PLSQL_CURSOR_ATTR_NOTFOUND,
+  PLSQL_CURSOR_ATTR_ROWCOUNT
+};
+
 
 /* These may not be declared yet */
 class Table_ident;
@@ -2803,6 +2817,11 @@ struct LEX: public Query_tables_list
      with clause in the current statement
   */
   With_clause **with_clauses_list_last_next;
+  /*
+    When a copy of a with element is parsed this is set to the offset of
+    the with element in the input string, otherwise it's set to 0
+  */
+  my_ptrdiff_t clone_spec_offset;
 
   Create_view_info *create_view;
 
@@ -3128,7 +3147,7 @@ public:
   */
   DYNAMIC_ARRAY delete_gtid_domain;
   static const ulong initial_gtid_domain_buffer_size= 16;
-  ulong gtid_domain_static_buffer[initial_gtid_domain_buffer_size];
+  uint32 gtid_domain_static_buffer[initial_gtid_domain_buffer_size];
 
   inline void set_limit_rows_examined()
   {
@@ -3633,6 +3652,10 @@ public:
   Item *make_item_colon_ident_ident(THD *thd,
                                     const Lex_ident_cli_st *a,
                                     const Lex_ident_cli_st *b);
+  // PLSQL: cursor%ISOPEN etc
+  Item *make_item_plsql_cursor_attr(THD *thd, const LEX_CSTRING *name,
+                                    plsql_cursor_attr_t attr);
+
   // For "SELECT @@var", "SELECT @@var.field"
   Item *make_item_sysvar(THD *thd,
                          enum_var_type type,
@@ -3713,9 +3736,9 @@ public:
   /* Integer range FOR LOOP methods */
   sp_variable *sp_add_for_loop_variable(THD *thd, const LEX_CSTRING *name,
                                         Item *value);
-  sp_variable *sp_add_for_loop_upper_bound(THD *thd, Item *value)
+  sp_variable *sp_add_for_loop_target_bound(THD *thd, Item *value)
   {
-    LEX_CSTRING name= { STRING_WITH_LEN("[upper_bound]") };
+    LEX_CSTRING name= { STRING_WITH_LEN("[target_bound]") };
     return sp_add_for_loop_variable(thd, &name, value);
   }
   bool sp_for_loop_intrange_declarations(THD *thd, Lex_for_loop_st *loop,

@@ -25,8 +25,6 @@ The page cursor
 Created 10/4/1994 Heikki Tuuri
 *************************************************************************/
 
-#include "ha_prototypes.h"
-
 #include "page0cur.h"
 #include "page0zip.h"
 #include "btr0btr.h"
@@ -737,7 +735,7 @@ up_slot_match:
 				  & REC_INFO_MIN_REC_FLAG)) {
 			ut_ad(!page_has_prev(page_align(mid_rec)));
 			ut_ad(!page_rec_is_leaf(mid_rec)
-			      || rec_is_default_row(mid_rec, index));
+			      || rec_is_metadata(mid_rec, index));
 			cmp = 1;
 			goto low_rec_match;
 		}
@@ -846,7 +844,8 @@ page_cur_insert_rec_write_log(
 	ulint	i;
 
 	if (index->table->is_temporary()) {
-		ut_ad(!mlog_open(mtr, 0));
+		mtr->set_modified();
+		ut_ad(mtr->get_log_mode() == MTR_LOG_NO_REDO);
 		return;
 	}
 
@@ -2256,7 +2255,10 @@ page_cur_parse_delete_rec(
 	offset = mach_read_from_2(ptr);
 	ptr += 2;
 
-	ut_a(offset <= srv_page_size);
+	if (UNIV_UNLIKELY(offset >= srv_page_size)) {
+		recv_sys->found_corrupt_log = true;
+		return NULL;
+	}
 
 	if (block) {
 		page_t*		page		= buf_block_get_frame(block);

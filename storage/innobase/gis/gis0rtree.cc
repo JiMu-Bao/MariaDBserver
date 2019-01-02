@@ -658,7 +658,7 @@ rtr_adjust_upper_level(
 
 	/* Create a memory heap where the data tuple is stored */
 	heap = mem_heap_create(1024);
-	memset(&cursor, 0, sizeof(cursor));
+	cursor.init();
 
 	cursor.thr = sea_cur->thr;
 
@@ -737,7 +737,7 @@ rtr_adjust_upper_level(
 	new_prdt.op = 0;
 
 	lock_prdt_update_parent(block, new_block, &prdt, &new_prdt,
-				index->table->space->id,
+				index->table->space_id,
 				page_cursor->block->page.id.page_no());
 
 	mem_heap_free(heap);
@@ -1258,7 +1258,7 @@ after_insert:
 	/* Check any predicate locks need to be moved/copied to the
 	new page */
 	lock_prdt_update_split(new_block, &prdt, &new_prdt,
-			       cursor->index->table->space->id, page_no);
+			       cursor->index->table->space_id, page_no);
 
 	/* Adjust the upper level. */
 	rtr_adjust_upper_level(cursor, flags, block, new_block,
@@ -1367,7 +1367,7 @@ rtr_ins_enlarge_mbr(
 		rtr_page_cal_mbr(index, block, &new_mbr, heap);
 
 		/* Get father block. */
-		memset(&cursor, 0, sizeof(cursor));
+		cursor.init();
 		offsets = rtr_page_get_father_block(
 			NULL, heap, index, block, mtr, btr_cur, &cursor);
 
@@ -1872,7 +1872,7 @@ rtr_estimate_n_rows_in_range(
 	mtr_s_lock(&index->lock, &mtr);
 
 	buf_block_t* block = btr_block_get(
-		page_id_t(index->table->space->id, index->page),
+		page_id_t(index->table->space_id, index->page),
 		page_size_t(index->table->space->flags),
 		RW_S_LATCH, index, &mtr);
 	const page_t* page = buf_block_get_frame(block);

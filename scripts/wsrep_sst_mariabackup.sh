@@ -33,7 +33,6 @@ ssystag=""
 XTRABACKUP_PID=""
 SST_PORT=""
 REMOTEIP=""
-REMOTEHOST=""
 tcert=""
 tpem=""
 tkey=""
@@ -219,7 +218,7 @@ get_transfer()
                 tcmd="socat -u openssl-listen:${TSST_PORT},reuseaddr,cert=${tpem},cafile=${tcert}${sockopt} stdio"
             else
                 wsrep_log_info "Encrypting with cert=${tpem}, cafile=${tcert}"
-                tcmd="socat -u stdio openssl-connect:${REMOTEHOST}:${TSST_PORT},cert=${tpem},cafile=${tcert}${sockopt}"
+                tcmd="socat -u stdio openssl-connect:${REMOTEIP}:${TSST_PORT},cert=${tpem},cafile=${tcert}${sockopt}"
             fi
         elif [[ $encrypt -eq 3 ]];then
             wsrep_log_info "Using openssl based encryption with socat: with key and crt"
@@ -242,7 +241,7 @@ get_transfer()
                     tcmd="socat -u stdio openssl-connect:${REMOTEIP}:${TSST_PORT},cert=${tpem},key=${tkey},verify=0${sockopt}"
                 else
                     wsrep_log_info "Encrypting with cert=${tpem}, key=${tkey}, cafile=${tcert}"
-                    tcmd="socat -u stdio openssl-connect:${REMOTEHOST}:${TSST_PORT},cert=${tpem},key=${tkey},cafile=${tcert}${sockopt}"
+                    tcmd="socat -u stdio openssl-connect:${REMOTEIP}:${TSST_PORT},cert=${tpem},key=${tkey},cafile=${tcert}${sockopt}"
                 fi
             fi
 
@@ -512,10 +511,6 @@ setup_ports()
     if [[ "$WSREP_SST_OPT_ROLE"  == "donor" ]];then
         SST_PORT=$(echo $WSREP_SST_OPT_ADDR | awk -F '[:/]' '{ print $2 }')
         REMOTEIP=$(echo $WSREP_SST_OPT_ADDR | awk -F ':' '{ print $1 }')
-        REMOTEHOST=$(getent hosts $REMOTEIP | awk '{ print $2 }')
-        if [[ -z $REMOTEHOST ]];then
-            REMOTEHOST=$REMOTEIP
-        fi
         lsn=$(echo $WSREP_SST_OPT_ADDR | awk -F '[:/]' '{ print $4 }')
         sst_ver=$(echo $WSREP_SST_OPT_ADDR | awk -F '[:/]' '{ print $5 }')
     else
@@ -638,6 +633,27 @@ send_donor()
 
 }
 
+monitor_process()
+{
+    local sst_stream_pid=$1
+
+    while true ; do
+
+        if ! ps --pid "${WSREP_SST_OPT_PARENT}" &>/dev/null; then
+            wsrep_log_error "Parent mysqld process (PID:${WSREP_SST_OPT_PARENT}) terminated unexpectedly." 
+            kill -- -"${WSREP_SST_OPT_PARENT}"
+            exit 32
+        fi
+
+        if ! ps --pid "${sst_stream_pid}" &>/dev/null; then 
+            break
+        fi
+
+        sleep 0.1
+
+    done
+}
+
 wsrep_check_programs "$INNOBACKUPEX_BIN"
 
 rm -f "${MAGIC_FILE}"
@@ -662,6 +678,30 @@ fi
 
 INNOEXTRA=""
 
+INNODB_DATA_HOME_DIR=${INNODB_DATA_HOME_DIR:-""}
+# Try to set INNODB_DATA_HOME_DIR from the command line:
+if [ ! -z "$INNODB_DATA_HOME_DIR_ARG" ]; then
+    INNODB_DATA_HOME_DIR=$INNODB_DATA_HOME_DIR_ARG
+fi
+# if INNODB_DATA_HOME_DIR env. variable is not set, try to get it from my.cnf
+if [ -z "$INNODB_DATA_HOME_DIR" ]; then
+    INNODB_DATA_HOME_DIR=$(parse_cnf mysqld$WSREP_SST_OPT_SUFFIX_VALUE innodb-data-home-dir '')
+fi
+if [ -z "$INNODB_DATA_HOME_DIR" ]; then
+    INNODB_DATA_HOME_DIR=$(parse_cnf --mysqld innodb-data-home-dir "")
+fi
+if [ ! -z "$INNODB_DATA_HOME_DIR" ]; then
+   INNOEXTRA+=" --innodb-data-home-dir=$INNODB_DATA_HOME_DIR"
+fi
+
+if [ -n "$INNODB_DATA_HOME_DIR" ]; then
+    # handle both relative and absolute paths
+    INNODB_DATA_HOME_DIR=$(cd $DATA; mkdir -p "$INNODB_DATA_HOME_DIR"; cd $INNODB_DATA_HOME_DIR; pwd -P)
+else
+    # default to datadir
+    INNODB_DATA_HOME_DIR=$(cd $DATA; pwd -P)
+fi
+
 if [[ $ssyslog -eq 1 ]];then 
 
     if ! command -v logger >/dev/null;then
@@ -682,13 +722,13 @@ if [[ $ssyslog -eq 1 ]];then
             logger  -p daemon.info -t ${ssystag}wsrep-sst-$WSREP_SST_OPT_ROLE "$@" 
         }
 
-        INNOAPPLY="${INNOBACKUPEX_BIN} --innobackupex $disver $iapts --apply-log \$rebuildcmd \${DATA} 2>&1  | logger -p daemon.err -t ${ssystag}innobackupex-apply "
+        INNOAPPLY="${INNOBACKUPEX_BIN} --innobackupex $disver $iapts \$INNOEXTRA --apply-log \$rebuildcmd \${DATA} 2>&1  | logger -p daemon.err -t ${ssystag}innobackupex-apply "
         INNOMOVE="${INNOBACKUPEX_BIN} --innobackupex ${WSREP_SST_OPT_CONF} $disver $impts  --move-back --force-non-empty-directories \${DATA} 2>&1 | logger -p daemon.err -t ${ssystag}innobackupex-move "
         INNOBACKUP="${INNOBACKUPEX_BIN} --innobackupex ${WSREP_SST_OPT_CONF} $disver $iopts \$tmpopts \$INNOEXTRA --galera-info --stream=\$sfmt \$itmpdir 2> >(logger -p daemon.err -t ${ssystag}innobackupex-backup)"
     fi
 
 else 
-    INNOAPPLY="${INNOBACKUPEX_BIN} --innobackupex $disver $iapts --apply-log \$rebuildcmd \${DATA} &>\${DATA}/innobackup.prepare.log"
+    INNOAPPLY="${INNOBACKUPEX_BIN} --innobackupex $disver $iapts \$INNOEXTRA --apply-log \$rebuildcmd \${DATA} &>\${DATA}/innobackup.prepare.log"
     INNOMOVE="${INNOBACKUPEX_BIN} --innobackupex ${WSREP_SST_OPT_CONF} $disver $impts  --move-back --force-non-empty-directories \${DATA} &>\${DATA}/innobackup.move.log"
     INNOBACKUP="${INNOBACKUPEX_BIN} --innobackupex ${WSREP_SST_OPT_CONF} $disver $iopts \$tmpopts \$INNOEXTRA --galera-info --stream=\$sfmt \$itmpdir 2>\${DATA}/innobackup.backup.log"
 fi
@@ -831,7 +871,7 @@ then
     [[ -e $SST_PROGRESS_FILE ]] && wsrep_log_info "Stale sst_in_progress file: $SST_PROGRESS_FILE"
     [[ -n $SST_PROGRESS_FILE ]] && touch $SST_PROGRESS_FILE
 
-    ib_home_dir=$(parse_cnf mysqld innodb-data-home-dir "")
+    ib_home_dir=$INNODB_DATA_HOME_DIR
     ib_log_dir=$(parse_cnf mysqld innodb-log-group-home-dir "")
     ib_undo_dir=$(parse_cnf mysqld innodb-undo-directory "")
 
@@ -923,7 +963,7 @@ then
 
         MAGIC_FILE="${DATA}/${INFO_FILE}"
         wsrep_log_info "Waiting for SST streaming to complete!"
-        wait $jpid
+        monitor_process $jpid
 
         get_proc
 

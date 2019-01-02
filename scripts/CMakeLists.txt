@@ -91,6 +91,7 @@ SET(ADD_GIS_SP_EOL ";")
 CONFIGURE_FILE(${CMAKE_CURRENT_SOURCE_DIR}/maria_add_gis_sp.sql.in
   ${CMAKE_CURRENT_BINARY_DIR}/maria_add_gis_sp_bootstrap.sql ESCAPE_QUOTES @ONLY)
 
+IF (NOT WITHOUT_SERVER)
 INSTALL(FILES 
   ${CMAKE_CURRENT_SOURCE_DIR}/mysql_system_tables.sql 
   ${CMAKE_CURRENT_SOURCE_DIR}/mysql_system_tables_data.sql
@@ -104,6 +105,7 @@ INSTALL(FILES
   ${FIX_PRIVILEGES_SQL}
   DESTINATION ${INSTALL_MYSQLSHAREDIR} COMPONENT Server
 )
+ENDIF()
 
 # TCMalloc hacks
 IF(MALLOC_LIB)
@@ -272,8 +274,6 @@ ELSE()
     SET(WSREP_SCRIPTS
       wsrep_sst_mysqldump
       wsrep_sst_rsync
-      wsrep_sst_xtrabackup
-      wsrep_sst_xtrabackup-v2
       wsrep_sst_mariabackup
     )
     # The following script is sourced from other SST scripts, so it should

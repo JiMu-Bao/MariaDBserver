@@ -25,10 +25,9 @@ Created July 18, 2007 Vasil Dimov
 Modified Dec 29, 2014 Jan Lindström (Added sys_semaphore_waits)
 *******************************************************/
 
-#include "ha_prototypes.h"
+#include "univ.i"
 #include <mysql_version.h>
 #include <field.h>
-#include "univ.i"
 
 #include <sql_acl.h>
 #include <sql_show.h>
@@ -58,8 +57,6 @@ Modified Dec 29, 2014 Jan Lindström (Added sys_semaphore_waits)
 #include "sync0arr.h"
 #include "fil0fil.h"
 #include "fil0crypt.h"
-#include "fsp0sysspace.h"
-#include "ut0new.h"
 #include "dict0crea.h"
 
 /** structure associates a name string with a file page type and/or buffer
@@ -1359,12 +1356,14 @@ i_s_cmp_fill_low(
 		page0zip.cc. */
 		table->field[1]->store(zip_stat->compressed, true);
 		table->field[2]->store(zip_stat->compressed_ok, true);
-		table->field[3]->store(zip_stat->compressed_usec / 1000000, true);
+		table->field[3]->store(zip_stat->compressed_usec / 1000000,
+				       true);
 		table->field[4]->store(zip_stat->decompressed, true);
-		table->field[5]->store(zip_stat->decompressed_usec / 1000000, true);
+		table->field[5]->store(zip_stat->decompressed_usec / 1000000,
+				       true);
 
 		if (reset) {
-			memset(zip_stat, 0, sizeof *zip_stat);
+			new (zip_stat) page_zip_stat_t();
 		}
 
 		if (schema_table_store_record(thd, table)) {

@@ -28,8 +28,6 @@ Created 1/8/1996 Heikki Tuuri
 #ifndef dict0mem_h
 #define dict0mem_h
 
-#include "univ.i"
-#include "dict0types.h"
 #include "data0type.h"
 #include "mem0mem.h"
 #include "row0types.h"
@@ -47,7 +45,6 @@ Created 1/8/1996 Heikki Tuuri
 #include "buf0buf.h"
 #include "gis0type.h"
 #include "os0once.h"
-#include "ut0new.h"
 #include "fil0fil.h"
 #include "fil0crypt.h"
 #include <set>
@@ -497,10 +494,6 @@ dict_mem_create_temporary_tablename(
 	const char*	dbtab,
 	table_id_t	id);
 
-/** Initialize dict memory variables */
-void
-dict_mem_init(void);
-
 /** SQL identifier name wrapper for pretty-printing */
 class id_name_t
 {
@@ -601,7 +594,7 @@ struct dict_col_t{
 	} def_val;
 
 	/** Retrieve the column name.
-	@param[in]	table	table name */
+	@param[in]	table	the table of this column */
 	const char* name(const dict_table_t& table) const;
 
 	/** @return whether this is a virtual column */
@@ -770,6 +763,9 @@ struct dict_field_t{
 	unsigned	fixed_len:10;	/*!< 0 or the fixed length of the
 					column if smaller than
 					DICT_ANTELOPE_MAX_INDEX_COL_LEN */
+
+	/** Zero-initialize all fields */
+	dict_field_t() : col(NULL), name(NULL), prefix_len(0), fixed_len(0) {}
 
 	/** Check whether two index fields are equivalent.
 	@param[in]	old	the other index field

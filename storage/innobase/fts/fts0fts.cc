@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2011, 2017, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2011, 2018, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2016, 2018, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
@@ -22,8 +22,6 @@ this program; if not, write to the Free Software Foundation, Inc.,
 Full Text Search interface
 ***********************************************************************/
 
-#include "ha_prototypes.h"
-
 #include "trx0roll.h"
 #include "row0mysql.h"
 #include "row0upd.h"
@@ -40,7 +38,6 @@ Full Text Search interface
 #include "dict0stats.h"
 #include "btr0pcur.h"
 #include "sync0sync.h"
-#include "ut0new.h"
 
 static const ulint FTS_MAX_ID_LEN = 32;
 
@@ -67,7 +64,7 @@ ulong	fts_max_total_cache_size;
 
 /** This is FTS result cache limit for each query and would be
 a configurable variable */
-ulong	fts_result_cache_limit;
+size_t	fts_result_cache_limit;
 
 /** Variable specifying the maximum FTS max token size */
 ulong	fts_max_token_size;
@@ -202,7 +199,7 @@ FTS auxiliary INDEX table and clear the cache at the end.
 @param[in,out]	sync		sync state
 @param[in]	unlock_cache	whether unlock cache lock when write node
 @param[in]	wait		whether wait when a sync is in progress
-@param[in]      has_dict        whether has dict operation lock
+@param[in]	has_dict	whether has dict operation lock
 @return DB_SUCCESS if all OK */
 static
 dberr_t
@@ -860,37 +857,28 @@ fts_drop_index(
 
 			err = fts_drop_index_tables(trx, index);
 
-			for(;;) {
-				bool retry = false;
-				if (index->index_fts_syncing) {
-					retry = true;
-				}
-				if (!retry){
-					fts_free(table);
-					break;
-				}
+			while (index->index_fts_syncing
+				&& !trx_is_interrupted(trx)) {
 				DICT_BG_YIELD(trx);
 			}
+
+			fts_free(table);
+
 			return(err);
 		}
 
-		for(;;) {
-			bool retry = false;
-			if (index->index_fts_syncing) {
-				retry = true;
-			}
-			if (!retry){
-				current_doc_id = table->fts->cache->next_doc_id;
-				first_doc_id = table->fts->cache->first_doc_id;
-				fts_cache_clear(table->fts->cache);
-				fts_cache_destroy(table->fts->cache);
-				table->fts->cache = fts_cache_create(table);
-				table->fts->cache->next_doc_id = current_doc_id;
-				table->fts->cache->first_doc_id = first_doc_id;
-				break;
-			}
+		while (index->index_fts_syncing
+		       && !trx_is_interrupted(trx)) {
 			DICT_BG_YIELD(trx);
 		}
+
+		current_doc_id = table->fts->cache->next_doc_id;
+		first_doc_id = table->fts->cache->first_doc_id;
+		fts_cache_clear(table->fts->cache);
+		fts_cache_destroy(table->fts->cache);
+		table->fts->cache = fts_cache_create(table);
+		table->fts->cache->next_doc_id = current_doc_id;
+		table->fts->cache->first_doc_id = first_doc_id;
 	} else {
 		fts_cache_t*            cache = table->fts->cache;
 		fts_index_cache_t*      index_cache;
@@ -900,17 +888,13 @@ fts_drop_index(
 		index_cache = fts_find_index_cache(cache, index);
 
 		if (index_cache != NULL) {
-			for(;;) {
-				bool retry = false;
-				if (index->index_fts_syncing) {
-					retry = true;
-				}
-				if (!retry && index_cache->words) {
-					fts_words_free(index_cache->words);
-					rbt_free(index_cache->words);
-					break;
-				}
+			while (index->index_fts_syncing
+			       && !trx_is_interrupted(trx)) {
 				DICT_BG_YIELD(trx);
+			}
+			if (index_cache->words) {
+				fts_words_free(index_cache->words);
+				rbt_free(index_cache->words);
 			}
 
 			ib_vector_remove(cache->indexes, *(void**) index_cache);
@@ -1482,7 +1466,8 @@ fts_drop_table(
 		/* Pass nonatomic=false (dont allow data dict unlock),
 		because the transaction may hold locks on SYS_* tables from
 		previous calls to fts_drop_table(). */
-		error = row_drop_table_for_mysql(table_name, trx, true, false, false);
+		error = row_drop_table_for_mysql(table_name, trx,
+						 SQLCOM_DROP_DB, false, false);
 
 		if (error != DB_SUCCESS) {
 			ib::error() << "Unable to drop FTS index aux table "
@@ -1525,8 +1510,8 @@ fts_rename_one_aux_table(
 	       table_new_name_len - new_db_name_len);
 	fts_table_new_name[table_new_name_len] = 0;
 
-	return(row_rename_table_for_mysql(
-		fts_table_old_name, fts_table_new_name, trx, false));
+	return row_rename_table_for_mysql(
+		fts_table_old_name, fts_table_new_name, trx, false, false);
 }
 
 /****************************************************************//**
@@ -1756,7 +1741,7 @@ fts_create_in_mem_aux_table(
 {
 	dict_table_t*	new_table = dict_mem_table_create(
 		aux_table_name, NULL, n_cols, 0, table->flags,
-		table->space->id == TRX_SYS_SPACE
+		table->space_id == TRX_SYS_SPACE
 		? 0 : table->space->purpose == FIL_TYPE_TEMPORARY
 		? DICT_TF2_TEMPORARY : DICT_TF2_USE_FILE_PER_TABLE);
 
@@ -1785,7 +1770,7 @@ fts_create_one_common_table(
 	const char*		fts_suffix,
 	mem_heap_t*		heap)
 {
-	dict_table_t*		new_table = NULL;
+	dict_table_t*		new_table;
 	dberr_t			error;
 	bool			is_config = strcmp(fts_suffix, "CONFIG") == 0;
 
@@ -1838,11 +1823,13 @@ fts_create_one_common_table(
 	}
 
 	if (error != DB_SUCCESS) {
-		trx->error_state = error;
 		dict_mem_table_free(new_table);
 		new_table = NULL;
 		ib::warn() << "Failed to create FTS common table "
 			<< fts_table_name;
+		trx->error_state = DB_SUCCESS;
+		row_drop_table_for_mysql(fts_table_name, trx, SQLCOM_DROP_DB);
+		trx->error_state = error;
 	}
 	return(new_table);
 }
@@ -1956,8 +1943,8 @@ func_exit:
 	if (error != DB_SUCCESS) {
 		for (it = common_tables.begin(); it != common_tables.end();
 		     ++it) {
-			row_drop_table_for_mysql(
-				(*it)->name.m_name, trx, true, FALSE);
+			row_drop_table_for_mysql((*it)->name.m_name, trx,
+						 SQLCOM_DROP_DB);
 		}
 	}
 
@@ -1983,7 +1970,7 @@ fts_create_one_index_table(
 	mem_heap_t*		heap)
 {
 	dict_field_t*		field;
-	dict_table_t*		new_table = NULL;
+	dict_table_t*		new_table;
 	char			table_name[MAX_FULL_NAME_LEN];
 	dberr_t			error;
 	CHARSET_INFO*		charset;
@@ -2047,11 +2034,13 @@ fts_create_one_index_table(
 	}
 
 	if (error != DB_SUCCESS) {
-		trx->error_state = error;
 		dict_mem_table_free(new_table);
 		new_table = NULL;
 		ib::warn() << "Failed to create FTS index table "
 			<< table_name;
+		trx->error_state = DB_SUCCESS;
+		row_drop_table_for_mysql(table_name, trx, SQLCOM_DROP_DB);
+		trx->error_state = error;
 	}
 
 	return(new_table);
@@ -2126,8 +2115,8 @@ fts_create_index_tables(trx_t* trx, const dict_index_t* index, table_id_t id)
 
 		for (it = aux_idx_tables.begin(); it != aux_idx_tables.end();
 		     ++it) {
-			row_drop_table_for_mysql(
-				(*it)->name.m_name, trx, true, FALSE);
+			row_drop_table_for_mysql((*it)->name.m_name, trx,
+						 SQLCOM_DROP_DB);
 		}
 	}
 
@@ -3745,7 +3734,7 @@ fts_get_max_doc_id(
 			goto func_exit;
 		}
 
-		ut_ad(!rec_is_default_row(rec, index));
+		ut_ad(!rec_is_metadata(rec, index));
 		offsets = rec_get_offsets(
 			rec, index, offsets, true, ULINT_UNDEFINED, &heap);
 
@@ -4048,6 +4037,9 @@ fts_sync_write_words(
 
 		word = rbt_value(fts_tokenizer_word_t, rbt_node);
 
+		DBUG_EXECUTE_IF("fts_instrument_write_words_before_select_index",
+				os_thread_sleep(300000););
+
 		selected = fts_select_index(
 			index_cache->charset, word->text.f_str,
 			word->text.f_len);
@@ -4332,7 +4324,7 @@ FTS auxiliary INDEX table and clear the cache at the end.
 @param[in,out]	sync		sync state
 @param[in]	unlock_cache	whether unlock cache lock when write node
 @param[in]	wait		whether wait when a sync is in progress
-@param[in]      has_dict        whether has dict operation lock
+@param[in]	has_dict	whether has dict operation lock
 @return DB_SUCCESS if all OK */
 static
 dberr_t
@@ -4398,15 +4390,13 @@ begin_sync:
 			continue;
 		}
 
+		DBUG_EXECUTE_IF("fts_instrument_sync_before_syncing",
+				os_thread_sleep(300000););
 		index_cache->index->index_fts_syncing = true;
-		DBUG_EXECUTE_IF("fts_instrument_sync_sleep_drop_waits",
-				os_thread_sleep(10000000);
-				);
 
 		error = fts_sync_index(sync, index_cache);
 
-		if (error != DB_SUCCESS && !sync->interrupted) {
-
+		if (error != DB_SUCCESS) {
 			goto end_sync;
 		}
 	}
@@ -4441,8 +4431,8 @@ end_sync:
 	}
 
 	rw_lock_x_lock(&cache->lock);
-	/* Clear fts syncing flags of any indexes incase sync is
-	interrupeted */
+	/* Clear fts syncing flags of any indexes in case sync is
+	interrupted */
 	for (i = 0; i < ib_vector_size(cache->indexes); ++i) {
 		static_cast<fts_index_cache_t*>(
 			ib_vector_get(cache->indexes, i))
@@ -6243,7 +6233,7 @@ fts_rename_one_aux_table_to_hex_format(
 	}
 
 	error = row_rename_table_for_mysql(aux_table->name, new_name, trx,
-					   FALSE);
+					   false, false);
 
 	if (error != DB_SUCCESS) {
 		ib::warn() << "Failed to rename aux table '"
@@ -6382,7 +6372,7 @@ fts_rename_aux_tables_to_hex_format_low(
 			DICT_TF2_FLAG_UNSET(table, DICT_TF2_FTS_AUX_HEX_NAME);
 			err = row_rename_table_for_mysql(table->name.m_name,
 							 aux_table->name,
-							 trx_bg, FALSE);
+							 trx_bg, false, false);
 
 			trx_bg->dict_operation_lock_mode = 0;
 			dict_table_close(table, TRUE, FALSE);
@@ -6701,7 +6691,8 @@ fts_drop_obsolete_aux_table_from_vector(
 		trx_start_for_ddl(trx_drop, TRX_DICT_OP_TABLE);
 
 		err = row_drop_table_for_mysql(
-			aux_drop_table->name, trx_drop, false, true);
+			aux_drop_table->name, trx_drop,
+			SQLCOM_DROP_TABLE, true);
 
 		trx_drop->dict_operation_lock_mode = 0;
 

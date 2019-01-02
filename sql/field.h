@@ -563,6 +563,7 @@ public:
   bool utf8;                                    /* Already in utf8 */
   Item *expr;
   LEX_CSTRING name;                             /* Name of constraint */
+  /* see VCOL_* (VCOL_FIELD_REF, ...) */
   uint flags;
 
   Virtual_column_info()
@@ -2295,7 +2296,6 @@ public:
   {
     return unpack_int64(to, from, from_end);
   }
-
   void set_max();
   bool is_max();
 };

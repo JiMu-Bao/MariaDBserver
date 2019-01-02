@@ -669,6 +669,7 @@ void LEX::start(THD *thd_arg)
   curr_with_clause= 0;
   with_clauses_list= 0;
   with_clauses_list_last_next= &with_clauses_list;
+  clone_spec_offset= 0;
   create_view= NULL;
   value_list.empty();
   update_list.empty();
@@ -733,7 +734,7 @@ void LEX::start(THD *thd_arg)
   profile_options= PROFILE_NONE;
   nest_level=0 ;
   select_lex.nest_level_base= &unit;
-  allow_sum_func= 0;
+  allow_sum_func.clear_all();
   in_sum_func= NULL;
 
   used_tables= 0;
@@ -836,6 +837,32 @@ int Lex_input_stream::find_keyword(Lex_ident_cli_st *kwd,
     kwd->set_keyword(tok, len);
     DBUG_ASSERT(tok >= get_buf());
     DBUG_ASSERT(tok < get_end_of_query());
+
+    if (m_thd->variables.sql_mode & MODE_ORACLE)
+    {
+      switch (symbol->tok) {
+      case BEGIN_MARIADB_SYM:          return BEGIN_ORACLE_SYM;
+      case BLOB_MARIADB_SYM:           return BLOB_ORACLE_SYM;
+      case BODY_MARIADB_SYM:           return BODY_ORACLE_SYM;
+      case CLOB_MARIADB_SYM:           return CLOB_ORACLE_SYM;
+      case CONTINUE_MARIADB_SYM:       return CONTINUE_ORACLE_SYM;
+      case DECLARE_MARIADB_SYM:        return DECLARE_ORACLE_SYM;
+      case DECODE_MARIADB_SYM:         return DECODE_ORACLE_SYM;
+      case ELSEIF_MARIADB_SYM:         return ELSEIF_ORACLE_SYM;
+      case ELSIF_MARIADB_SYM:          return ELSIF_ORACLE_SYM;
+      case EXCEPTION_MARIADB_SYM:      return EXCEPTION_ORACLE_SYM;
+      case EXIT_MARIADB_SYM:           return EXIT_ORACLE_SYM;
+      case GOTO_MARIADB_SYM:           return GOTO_ORACLE_SYM;
+      case NUMBER_MARIADB_SYM:         return NUMBER_ORACLE_SYM;
+      case OTHERS_MARIADB_SYM:         return OTHERS_ORACLE_SYM;
+      case PACKAGE_MARIADB_SYM:        return PACKAGE_ORACLE_SYM;
+      case RAISE_MARIADB_SYM:          return RAISE_ORACLE_SYM;
+      case RAW_MARIADB_SYM:            return RAW_ORACLE_SYM;
+      case RETURN_MARIADB_SYM:         return RETURN_ORACLE_SYM;
+      case ROWTYPE_MARIADB_SYM:        return ROWTYPE_ORACLE_SYM;
+      case VARCHAR2_MARIADB_SYM:       return VARCHAR2_ORACLE_SYM;
+      }
+    }
 
     if ((symbol->tok == NOT_SYM) &&
         (m_thd->variables.sql_mode & MODE_HIGH_NOT_PRECEDENCE))
@@ -1403,6 +1430,12 @@ int Lex_input_stream::lex_one_token(YYSTYPE *yylval, THD *thd)
       }
       /* Fall through */
     case MY_LEX_CHAR:                          // Unknown or single char token
+      if (c == '%' && (m_thd->variables.sql_mode & MODE_ORACLE))
+      {
+        next_state= MY_LEX_START;
+        return PERCENT_ORACLE_SYM;
+      }
+      /* Fall through */
     case MY_LEX_SKIP:                          // This should not happen
       if (c != ')')
         next_state= MY_LEX_START;         // Allow signed numbers
@@ -1841,8 +1874,13 @@ int Lex_input_stream::lex_one_token(YYSTYPE *yylval, THD *thd)
     case MY_LEX_SET_VAR:                // Check if ':='
       if (yyPeek() != '=')
       {
-        state= MY_LEX_CHAR;              // Return ':'
-        break;
+        next_state= MY_LEX_START;
+        if (m_thd->variables.sql_mode & MODE_ORACLE)
+        {
+          yylval->kwd.set_keyword(m_tok_start, 1);
+          return COLON_ORACLE_SYM;
+        }
+        return (int) ':';
       }
       yySkip();
       return (SET_VAR);
@@ -2334,7 +2372,7 @@ void st_select_lex::init_select()
   m_non_agg_field_used= false;
   m_agg_func_used= false;
   m_custom_agg_func_used= false;
-  name_visibility_map= 0;
+  name_visibility_map.clear_all();
   with_dep= 0;
   join= 0;
   lock_type= TL_READ_DEFAULT;
@@ -3099,7 +3137,7 @@ LEX::LEX()
                       INITIAL_LEX_PLUGIN_LIST_SIZE, 0);
   reset_query_tables_list(TRUE);
   mi.init();
-  init_dynamic_array2(&delete_gtid_domain, sizeof(ulong*),
+  init_dynamic_array2(&delete_gtid_domain, sizeof(uint32),
                       gtid_domain_static_buffer,
                       initial_gtid_domain_buffer_size,
                       initial_gtid_domain_buffer_size, 0);
@@ -4678,18 +4716,18 @@ void SELECT_LEX::increase_derived_records(ha_rows records)
       return; 
   }
   
-  select_unit *result= (select_unit*)unit->result;
+  select_result *result= unit->result;
   switch (linkage)
   {
   case INTERSECT_TYPE:
     // result of intersect can't be more then one of components
-    set_if_smaller(result->records, records);
+    set_if_smaller(result->est_records, records);
   case EXCEPT_TYPE:
     // in worse case none of record will be removed
     break;
   default:
     // usual UNION
-    result->records+= records;
+    result->est_records+= records;
     break;
   }
 }
@@ -5657,7 +5695,7 @@ bool LEX::sp_for_loop_implicit_cursor_statement(THD *thd,
     return true;
   DBUG_ASSERT(thd->lex == this);
   bounds->m_direction= 1;
-  bounds->m_upper_bound= NULL;
+  bounds->m_target_bound= NULL;
   bounds->m_implicit_cursor= true;
   return false;
 }
@@ -5701,7 +5739,7 @@ bool LEX::sp_for_loop_condition(THD *thd, const Lex_for_loop_st &loop)
   Item_splocal *args[2];
   for (uint i= 0 ; i < 2; i++)
   {
-    sp_variable *src= i == 0 ? loop.m_index : loop.m_upper_bound;
+    sp_variable *src= i == 0 ? loop.m_index : loop.m_target_bound;
     args[i]= new (thd->mem_root)
               Item_splocal(thd, &sp_rcontext_handler_local,
                            &src->name, src->offset, src->type_handler());
@@ -5762,11 +5800,11 @@ bool LEX::sp_for_loop_intrange_declarations(THD *thd, Lex_for_loop_st *loop,
                  sp_add_for_loop_variable(thd, index,
                                           bounds.m_index->get_item()))))
     return true;
-  if (unlikely(!(loop->m_upper_bound=
-                 bounds.m_upper_bound->
-                 sp_add_for_loop_upper_bound(thd,
-                                             bounds.
-                                             m_upper_bound->get_item()))))
+  if (unlikely(!(loop->m_target_bound=
+                 bounds.m_target_bound->
+                 sp_add_for_loop_target_bound(thd,
+                                              bounds.
+                                              m_target_bound->get_item()))))
      return true;
   loop->m_direction= bounds.m_direction;
   loop->m_implicit_cursor= 0;
@@ -5829,7 +5867,7 @@ bool LEX::sp_for_loop_cursor_declarations(THD *thd,
                                                        bounds.m_index,
                                                        item_func_sp)))
     return true;
-  loop->m_upper_bound= NULL;
+  loop->m_target_bound= NULL;
   loop->m_direction= bounds.m_direction;
   loop->m_cursor_offset= coffs;
   loop->m_implicit_cursor= bounds.m_implicit_cursor;
@@ -6635,6 +6673,30 @@ Item *LEX::make_item_colon_ident_ident(THD *thd,
 }
 
 
+Item *LEX::make_item_plsql_cursor_attr(THD *thd, const LEX_CSTRING *name,
+                                       plsql_cursor_attr_t attr)
+{
+  uint offset;
+  if (unlikely(!spcont || !spcont->find_cursor(name, &offset, false)))
+  {
+    my_error(ER_SP_CURSOR_MISMATCH, MYF(0), name->str);
+    return NULL;
+  }
+  switch (attr) {
+  case PLSQL_CURSOR_ATTR_ISOPEN:
+    return new (thd->mem_root) Item_func_cursor_isopen(thd, name, offset);
+  case PLSQL_CURSOR_ATTR_FOUND:
+    return new (thd->mem_root) Item_func_cursor_found(thd, name, offset);
+  case PLSQL_CURSOR_ATTR_NOTFOUND:
+    return new (thd->mem_root) Item_func_cursor_notfound(thd, name, offset);
+  case PLSQL_CURSOR_ATTR_ROWCOUNT:
+    return new (thd->mem_root) Item_func_cursor_rowcount(thd, name, offset);
+  }
+  DBUG_ASSERT(0);
+  return NULL;
+}
+
+
 Item *LEX::make_item_sysvar(THD *thd,
                             enum_var_type type,
                             const LEX_CSTRING *name,
@@ -6660,6 +6722,14 @@ Item *LEX::make_item_sysvar(THD *thd,
 }
 
 
+static bool param_push_or_clone(THD *thd, LEX *lex, Item_param *item)
+{
+  return !lex->clone_spec_offset ?
+         lex->param_list.push_back(item, thd->mem_root) :
+         item->add_as_clone(thd);
+}
+
+
 Item_param *LEX::add_placeholder(THD *thd, const LEX_CSTRING *name,
                                  const char *start, const char *end)
 {
@@ -6677,7 +6747,7 @@ Item_param *LEX::add_placeholder(THD *thd, const LEX_CSTRING *name,
   Query_fragment pos(thd, sphead, start, end);
   Item_param *item= new (thd->mem_root) Item_param(thd, name,
                                                    pos.pos(), pos.length());
-  if (unlikely(!item) || unlikely(param_list.push_back(item, thd->mem_root)))
+  if (unlikely(!item) || unlikely(param_push_or_clone(thd, this, item)))
   {
     my_error(ER_OUT_OF_RESOURCES, MYF(0));
     return NULL;

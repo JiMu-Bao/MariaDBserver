@@ -102,7 +102,7 @@ fi
 # AWS SDK also requires the build machine to have network access and git, so
 # it cannot be part of the base version included in Linux distros, but a pure
 # custom built plugin.
-if [[ $GCCVERSION -gt 40800 ]] && [[ ! $TRAVIS ]] && ping -c 1 github.com
+if [[ $GCCVERSION -gt 40800 ]] && [[ ! $TRAVIS ]] && [[ -x "$(command -v git)" ]] && timeout 3s bash -c 'sed -n q </dev/tcp/github.com/22'
 then
   cat <<EOF >> debian/control
 
@@ -160,7 +160,7 @@ fi
 # Build the package
 # Pass -I so that .git and other unnecessary temporary and source control files
 # will be ignored by dpkg-source when creating the tar.gz source package.
-fakeroot dpkg-buildpackage -us -uc -I $BUILDPACKAGE_FLAGS
+fakeroot dpkg-buildpackage -us -uc -I $BUILDPACKAGE_FLAGS -j$(nproc)
 
 # If the step above fails due to missing dependencies, you can manually run
 #   sudo mk-build-deps debian/control -r -i

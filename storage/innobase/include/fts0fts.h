@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2011, 2016, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2011, 2018, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2016, 2017, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
@@ -27,12 +27,8 @@ Created 2011/09/02 Sunny Bains
 #ifndef fts0fts_h
 #define fts0fts_h
 
-#include "ha_prototypes.h"
-
 #include "data0type.h"
 #include "data0types.h"
-#include "dict0types.h"
-#include "hash0hash.h"
 #include "mem0mem.h"
 #include "rem0types.h"
 #include "row0types.h"
@@ -394,7 +390,7 @@ extern ulong		fts_max_cache_size;
 extern ulong		fts_max_total_cache_size;
 
 /** Variable specifying the FTS result cache limit for each query */
-extern ulong		fts_result_cache_limit;
+extern size_t		fts_result_cache_limit;
 
 /** Variable specifying the maximum FTS max token size */
 extern ulong		fts_max_token_size;
@@ -561,6 +557,7 @@ fts_commit(
 	MY_ATTRIBUTE((warn_unused_result));
 
 /** FTS Query entry point.
+@param[in,out]	trx		transaction
 @param[in]	index		fts index to search
 @param[in]	flags		FTS search mode
 @param[in]	query_str	FTS query
@@ -569,6 +566,7 @@ fts_commit(
 @return DB_SUCCESS if successful otherwise error code */
 dberr_t
 fts_query(
+	trx_t*		trx,
 	dict_index_t*	index,
 	uint		flags,
 	const byte*	query_str,
@@ -710,6 +708,12 @@ fts_drop_index_tables(
 	trx_t*		trx,			/*!< in: transaction */
 	dict_index_t*	index)			/*!< in: Index to drop */
 	MY_ATTRIBUTE((warn_unused_result));
+
+/** Add the table to add to the OPTIMIZER's list.
+@param[in]	table	table to add */
+void
+fts_optimize_add_table(
+	dict_table_t*	table);
 
 /******************************************************************//**
 Remove the table from the OPTIMIZER's list. We do wait for

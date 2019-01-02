@@ -26,8 +26,6 @@ Created 2/2/1994 Heikki Tuuri
 #ifndef page0page_h
 #define page0page_h
 
-#include "univ.i"
-
 #include "page0types.h"
 #ifndef UNIV_INNOCHECKSUM
 #include "fil0fil.h"
@@ -87,12 +85,12 @@ bits are stored in the most significant 5 bits of PAGE_DIRECTION_B.
 
 These FIL_PAGE_TYPE_INSTANT and PAGE_INSTANT may be assigned even if
 instant ADD COLUMN was not committed. Changes to these page header fields
-are not undo-logged, but changes to the 'default value record' are.
+are not undo-logged, but changes to the hidden metadata record are.
 If the server is killed and restarted, the page header fields could
-remain set even though no 'default value record' is present.
+remain set even though no metadata record is present.
 
 When the table becomes empty, the PAGE_INSTANT field and the
-FIL_PAGE_TYPE can be reset and any 'default value record' be removed. */
+FIL_PAGE_TYPE can be reset and any metadata record be removed. */
 #define PAGE_INSTANT	12
 
 /** last insert direction: PAGE_LEFT, ....
@@ -285,13 +283,11 @@ page_rec_is_comp(const byte* rec)
 }
 
 # ifdef UNIV_DEBUG
-/** Determine if the record is the 'default row' pseudo-record
+/** Determine if the record is the metadata pseudo-record
 in the clustered index.
 @param[in]	rec	leaf page record on an index page
-@return	whether the record is the 'default row' pseudo-record */
-inline
-bool
-page_rec_is_default_row(const rec_t* rec)
+@return	whether the record is the metadata pseudo-record */
+inline bool page_rec_is_metadata(const rec_t* rec)
 {
 	return rec_get_info_bits(rec, page_rec_is_comp(rec))
 		& REC_INFO_MIN_REC_FLAG;
@@ -1354,17 +1350,6 @@ page_find_rec_with_heap_no(
 const rec_t*
 page_find_rec_max_not_deleted(
 	const page_t*	page);
-
-/** Issue a warning when the checksum that is stored in the page is valid,
-but different than the global setting innodb_checksum_algorithm.
-@param[in]	current_algo	current checksum algorithm
-@param[in]	page_checksum	page valid checksum
-@param[in]	page_id		page identifier */
-void
-page_warn_strict_checksum(
-	srv_checksum_algorithm_t	curr_algo,
-	srv_checksum_algorithm_t	page_checksum,
-	const page_id_t&		page_id);
 
 #ifdef UNIV_MATERIALIZE
 #undef UNIV_INLINE

@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2009, 2017, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2009, 2018, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2015, 2018, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
@@ -24,17 +24,13 @@ Code used for calculating and manipulating table statistics.
 Created Jan 06, 2010 Vasil Dimov
 *******************************************************/
 
-#include "univ.i"
-
+#include "dict0stats.h"
 #include "ut0ut.h"
 #include "ut0rnd.h"
 #include "dyn0buf.h"
 #include "row0sel.h"
 #include "trx0trx.h"
 #include "pars0pars.h"
-#include "dict0stats.h"
-#include "ha_prototypes.h"
-#include "ut0new.h"
 #include <mysql_com.h>
 #include "btr0btr.h"
 
@@ -108,9 +104,7 @@ where n=1..n_uniq.
 @} */
 
 /* names of the tables from the persistent statistics storage */
-#define TABLE_STATS_NAME	"mysql/innodb_table_stats"
 #define TABLE_STATS_NAME_PRINT	"mysql.innodb_table_stats"
-#define INDEX_STATS_NAME	"mysql/innodb_index_stats"
 #define INDEX_STATS_NAME_PRINT	"mysql.innodb_index_stats"
 
 #ifdef UNIV_STATS_DEBUG
@@ -181,7 +175,7 @@ dict_stats_persistent_storage_check(
 			DATA_NOT_NULL, 192},
 
 		{"table_name", DATA_VARMYSQL,
-			DATA_NOT_NULL, 192},
+			DATA_NOT_NULL, 597},
 
 		{"last_update", DATA_FIXBINARY,
 			DATA_NOT_NULL, 4},
@@ -209,7 +203,7 @@ dict_stats_persistent_storage_check(
 			DATA_NOT_NULL, 192},
 
 		{"table_name", DATA_VARMYSQL,
-			DATA_NOT_NULL, 192},
+			DATA_NOT_NULL, 597},
 
 		{"index_name", DATA_VARMYSQL,
 			DATA_NOT_NULL, 192},
@@ -1086,7 +1080,7 @@ dict_stats_analyze_index_level(
 		    btr_pcur_get_rec(&pcur), page_is_comp(page))) {
 		ut_ad(btr_pcur_is_on_user_rec(&pcur));
 		if (level == 0) {
-			/* Skip the 'default row' pseudo-record */
+			/* Skip the metadata pseudo-record */
 			ut_ad(index->is_instant());
 			btr_pcur_move_to_next_user_rec(&pcur, mtr);
 		}
@@ -1508,7 +1502,7 @@ dict_stats_analyze_index_below_cur(
 	offsets_rec = rec_get_offsets(rec, index, offsets1, false,
 				      ULINT_UNDEFINED, &heap);
 
-	page_id_t		page_id(index->table->space->id,
+	page_id_t		page_id(index->table->space_id,
 					btr_node_ptr_get_child_page_no(
 						rec, offsets_rec));
 	const page_size_t	page_size(index->table->space->flags);

@@ -26,15 +26,9 @@ Created 5/30/1994 Heikki Tuuri
 
 #include "rem0rec.h"
 #include "page0page.h"
-#include "mtr0mtr.h"
 #include "mtr0log.h"
 #include "fts0fts.h"
-#ifdef WITH_WSREP
-#include <ha_prototypes.h>
-#endif /* WITH_WSREP */
-#include "gis0geo.h"
 #include "trx0sys.h"
-#include "mach0data.h"
 
 /*			PHYSICAL RECORD (OLD STYLE)
 			===========================
@@ -1905,7 +1899,7 @@ rec_copy_prefix_to_buf(
 	case REC_STATUS_COLUMNS_ADDED:
 		/* We would have !index->is_instant() when rolling back
 		an instant ADD COLUMN operation. */
-		ut_ad(index->is_instant() || page_rec_is_default_row(rec));
+		ut_ad(index->is_instant() || page_rec_is_metadata(rec));
 		nulls++;
 		const ulint n_rec = ulint(index->n_core_fields) + 1
 			+ rec_get_n_add_field(nulls);
@@ -2565,6 +2559,8 @@ rec_offs_make_nth_extern(
 	rec_offs_base(offsets)[1 + n] |= REC_OFFS_EXTERNAL;
 }
 #ifdef WITH_WSREP
+# include "ha_prototypes.h"
+
 int
 wsrep_rec_get_foreign_key(
 	byte 		*buf,     /* out: extracted key */

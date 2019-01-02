@@ -94,7 +94,6 @@ packaging/rpm-oel/mysql.spec
 packaging/rpm-uln/mysql.10.0.11.spec
 packaging/solaris/postinstall-solaris
 pcre/config.h
-pcre/pcre*test.sh
 pcre/pcre.h
 pcre/pcre_chartables.c
 pcre/pcregrep
@@ -129,8 +128,6 @@ scripts/wsrep_sst_mysqldump
 scripts/wsrep_sst_rsync
 scripts/wsrep_sst_rsync_wan
 scripts/wsrep_sst_mariabackup
-scripts/wsrep_sst_xtrabackup
-scripts/wsrep_sst_xtrabackup-v2
 scripts/maria_add_gis_sp.sql
 scripts/maria_add_gis_sp_bootstrap.sql
 scripts/galera_new_cluster
@@ -262,6 +259,7 @@ storage/mroonga/vendor/groonga/src/groonga-benchmark
 storage/mroonga/vendor/groonga/src/suggest/groonga-suggest-create-dataset
 storage/mroonga/mysql-test/mroonga/storage/r/information_schema_plugins.result
 storage/mroonga/mysql-test/mroonga/storage/r/variable_version.result
+zlib/zconf.h
 xxx/*
 yyy/*
 zzz/*

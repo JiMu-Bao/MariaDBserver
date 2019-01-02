@@ -24,12 +24,9 @@ Transaction rollback
 Created 3/26/1996 Heikki Tuuri
 *******************************************************/
 
-#include "my_config.h"
-#include <my_service_manager.h>
-
-#include "ha_prototypes.h"
 #include "trx0roll.h"
 
+#include <my_service_manager.h>
 #include <mysql/service_wsrep.h>
 
 #include "fsp0fsp.h"
@@ -46,7 +43,6 @@ Created 3/26/1996 Heikki Tuuri
 #include "trx0sys.h"
 #include "trx0trx.h"
 #include "trx0undo.h"
-#include "ha_prototypes.h"
 
 /** This many pages must be undone before a truncate is tried within
 rollback */
@@ -1019,7 +1015,7 @@ trx_roll_pop_top_rec_of_trx(trx_t* trx, roll_ptr_t* roll_ptr, mem_heap_t* heap)
 	trx_undo_rec_t*	undo_rec = trx_roll_pop_top_rec(trx, undo, &mtr);
 	const undo_no_t	undo_no = trx_undo_rec_get_undo_no(undo_rec);
 	switch (trx_undo_rec_get_type(undo_rec)) {
-	case TRX_UNDO_INSERT_DEFAULT:
+	case TRX_UNDO_INSERT_METADATA:
 		/* This record type was introduced in MDEV-11369
 		instant ADD COLUMN, which was implemented after
 		MDEV-12288 removed the insert_undo log. There is no

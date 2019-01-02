@@ -24,8 +24,6 @@ Update of a row
 Created 12/27/1996 Heikki Tuuri
 *******************************************************/
 
-#include "ha_prototypes.h"
-
 #include "row0upd.h"
 #include "dict0dict.h"
 #include "dict0mem.h"
@@ -286,29 +284,7 @@ row_upd_check_references_constraints(
 					FALSE, FALSE, DICT_ERR_IGNORE_NONE);
 			}
 
-			/* dict_operation_lock is held both here
-			(UPDATE or DELETE with FOREIGN KEY) and by TRUNCATE
-			TABLE operations.
-			If a TRUNCATE TABLE operation is in progress,
-			there can be 2 possible conditions:
-			1) row_truncate_table_for_mysql() is not yet called.
-			2) Truncate releases dict_operation_lock
-			during eviction of pages from buffer pool
-			for a file-per-table tablespace.
-
-			In case of (1), truncate will wait for FK operation
-			to complete.
-			In case of (2), truncate will be rolled forward even
-			if it is interrupted. So if the foreign table is
-			undergoing a truncate, ignore the FK check. */
-
 			if (foreign_table) {
-				if (foreign_table->space
-				    && foreign_table->space
-				    ->is_being_truncated) {
-					continue;
-				}
-
 				foreign_table->inc_fk_checks();
 			}
 
@@ -1815,8 +1791,31 @@ row_upd_changes_ord_field_binary_func(
 				if (flag == ROW_BUILD_FOR_UNDO
 				    && dict_table_has_atomic_blobs(
 					    index->table)) {
-					/* For undo, and the table is Barrcuda,
-					we need to skip the prefix data. */
+					/* For ROW_FORMAT=DYNAMIC
+					or COMPRESSED, a prefix of
+					off-page records is stored
+					in the undo log record
+					(for any column prefix indexes).
+					For SPATIAL INDEX, we must
+					ignore this prefix. The
+					full column value is stored in
+					the BLOB.
+					For non-spatial index, we
+					would have already fetched a
+					necessary prefix of the BLOB,
+					available in the "ext" parameter.
+
+					Here, for SPATIAL INDEX, we are
+					fetching the full column, which is
+					potentially wasting a lot of I/O,
+					memory, and possibly involving a
+					concurrency problem, similar to ones
+					that existed before the introduction
+					of row_ext_t.
+
+					MDEV-11657 FIXME: write the MBR
+					directly to the undo log record,
+					and avoid recomputing it here! */
 					flen = BTR_EXTERN_FIELD_REF_SIZE;
 					ut_ad(dfield_get_len(new_field) >=
 					      BTR_EXTERN_FIELD_REF_SIZE);
@@ -2163,6 +2162,7 @@ row_upd_store_v_row(
 				}
 
 				dfield_copy_data(dfield, upd_field->old_v_val);
+				dfield_dup(dfield, node->heap);
 				break;
 			}
 
@@ -2183,6 +2183,7 @@ row_upd_store_v_row(
 								update->old_vrow,
 								col_no);
 						dfield_copy_data(dfield, vfield);
+						dfield_dup(dfield, node->heap);
 					}
 				} else {
 					/* Need to compute, this happens when
@@ -2319,7 +2320,7 @@ row_upd_sec_index_entry(
 
 	mtr.start();
 
-	switch (index->table->space->id) {
+	switch (index->table->space_id) {
 	case SRV_TMP_SPACE_ID:
 		mtr.set_log_mode(MTR_LOG_NO_REDO);
 		flags = BTR_NO_LOCKING_FLAG;

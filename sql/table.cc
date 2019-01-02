@@ -324,7 +324,8 @@ TABLE_SHARE *alloc_table_share(const char *db, const char *table_name,
     share->can_do_row_logging= 1;
     if (share->table_category == TABLE_CATEGORY_LOG)
       share->no_replicate= 1;
-    if (my_strnncoll(table_alias_charset, (uchar*) db, 6,
+    if (key_length > 6 &&
+        my_strnncoll(table_alias_charset, (const uchar*) key, 6,
                      (const uchar*) "mysql", 6) == 0)
       share->not_usable_by_query_cache= 1;
 
@@ -431,6 +432,7 @@ void TABLE_SHARE::destroy()
     ha_share= NULL;                             // Safety
   }
 
+  delete_stat_values_for_table_share(this);
   delete sequence;
   free_root(&stats_cb.mem_root, MYF(0));
   stats_cb.stats_can_be_read= FALSE;
@@ -2143,7 +2145,7 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
     keyinfo= share->key_info;
     uint primary_key= my_strcasecmp(system_charset_info, share->keynames.type_names[0],
                                     primary_key_name) ? MAX_KEY : 0;
-    KEY* key_first_info;
+    KEY* key_first_info= NULL;
 
     if (primary_key >= MAX_KEY && keyinfo->flags & HA_NOSAME)
     {
@@ -2431,7 +2433,7 @@ int TABLE_SHARE::init_from_binary_frm_image(THD *thd, bool write,
         if (!(key_part->key_part_flag & (HA_BLOB_PART | HA_VAR_LENGTH_PART |
                                          HA_BIT_PART)) &&
             key_part->type != HA_KEYTYPE_FLOAT &&
-            key_part->type == HA_KEYTYPE_DOUBLE)
+            key_part->type != HA_KEYTYPE_DOUBLE)
           key_part->key_part_flag|= HA_CAN_MEMCMP;
       }
       keyinfo->usable_key_parts= usable_parts; // Filesort
@@ -3122,10 +3124,12 @@ enum open_frm_error open_table_from_share(THD *thd, TABLE_SHARE *share,
 {
   enum open_frm_error error;
   uint records, i, bitmap_size, bitmap_count;
+  const char *tmp_alias;
   bool error_reported= FALSE;
   uchar *record, *bitmaps;
   Field **field_ptr;
   uint8 save_context_analysis_only= thd->lex->context_analysis_only;
+  TABLE_SHARE::enum_v_keys check_set_initialized= share->check_set_initialized;
   DBUG_ENTER("open_table_from_share");
   DBUG_PRINT("enter",("name: '%s.%s'  form: %p", share->db.str,
                       share->table_name.str, outparam));
@@ -3149,8 +3153,14 @@ enum open_frm_error open_table_from_share(THD *thd, TABLE_SHARE *share,
   init_sql_alloc(&outparam->mem_root, "table", TABLE_ALLOC_BLOCK_SIZE, 0,
                  MYF(0));
 
-  if (outparam->alias.copy(alias->str, alias->length, table_alias_charset))
+  /*
+    We have to store the original alias in mem_root as constraints and virtual
+    functions may store pointers to it
+  */
+  if (!(tmp_alias= strmake_root(&outparam->mem_root, alias->str, alias->length)))
     goto err;
+
+  outparam->alias.set(tmp_alias, alias->length, table_alias_charset);
   outparam->quick_keys.init();
   outparam->covering_keys.init();
   outparam->intersect_keys.init();
@@ -3238,6 +3248,8 @@ enum open_frm_error open_table_from_share(THD *thd, TABLE_SHARE *share,
       goto err;
   }
   (*field_ptr)= 0;                              // End marker
+
+  DEBUG_SYNC(thd, "TABLE_after_field_clone");
 
   outparam->vers_write= share->versioned;
 
@@ -3498,6 +3510,16 @@ partititon_err:
   }
 
   outparam->mark_columns_used_by_virtual_fields();
+  if (!check_set_initialized &&
+      share->check_set_initialized == TABLE_SHARE::V_KEYS)
+  {
+    // copy PART_INDIRECT_KEY_FLAG that was set meanwhile by *some* thread
+    for (uint i= 0 ; i < share->fields ; i++)
+    {
+      if (share->field[i]->flags & PART_INDIRECT_KEY_FLAG)
+        outparam->field[i]->flags|= PART_INDIRECT_KEY_FLAG;
+    }
+  }
 
   if (db_stat)
   {
@@ -3906,6 +3928,7 @@ void update_create_info_from_table(HA_CREATE_INFO *create_info, TABLE *table)
   create_info->table_options= share->db_create_options;
   create_info->avg_row_length= share->avg_row_length;
   create_info->row_type= share->row_type;
+  create_info->key_block_size= share->key_block_size;
   create_info->default_table_charset= share->table_charset;
   create_info->table_charset= 0;
   create_info->comment= share->comment;
@@ -4585,7 +4608,7 @@ void TABLE::init(THD *thd, TABLE_LIST *tl)
                                    s->table_name.str,
                                    tl->alias.str);
   /* Fix alias if table name changes. */
-  if (strcmp(alias.c_ptr(), tl->alias.str))
+  if (!alias.alloced_length() || strcmp(alias.c_ptr(), tl->alias.str))
     alias.copy(tl->alias.str, tl->alias.length, alias.charset());
 
   tablenr= thd->current_tablenr++;
@@ -6174,7 +6197,7 @@ Field_iterator_table_ref::get_or_create_column_ref(THD *thd, TABLE_LIST *parent_
     nj_col= natural_join_it.column_ref();
     DBUG_ASSERT(nj_col);
   }
-  DBUG_ASSERT(!nj_col->table_field ||
+  DBUG_ASSERT(!nj_col->table_field || !nj_col->table_field->field ||
               nj_col->table_ref->table == nj_col->table_field->field->table);
 
   /*
@@ -6223,7 +6246,7 @@ Field_iterator_table_ref::get_or_create_column_ref(THD *thd, TABLE_LIST *parent_
 
   RETURN
     #     Pointer to a column of a natural join (or its operand)
-    NULL  No memory to allocate the column
+    NULL  We didn't originally have memory to allocate the column
 */
 
 Natural_join_column *
@@ -6239,7 +6262,7 @@ Field_iterator_table_ref::get_natural_column_ref()
   */
   nj_col= natural_join_it.column_ref();
   DBUG_ASSERT(nj_col &&
-              (!nj_col->table_field ||
+              (!nj_col->table_field || !nj_col->table_field->field ||
                nj_col->table_ref->table == nj_col->table_field->field->table));
   return nj_col;
 }
@@ -6862,6 +6885,7 @@ void TABLE::mark_columns_used_by_virtual_fields(void)
 {
   MY_BITMAP *save_read_set;
   Field **vfield_ptr;
+  TABLE_SHARE::enum_v_keys v_keys= TABLE_SHARE::NO_V_KEYS;
 
   /* If there is virtual fields are already initialized */
   if (s->check_set_initialized)
@@ -6900,11 +6924,14 @@ void TABLE::mark_columns_used_by_virtual_fields(void)
     for (uint i= 0 ; i < s->fields ; i++)
     {
       if (bitmap_is_set(&tmp_set, i))
-        field[i]->flags|= PART_INDIRECT_KEY_FLAG;
+      {
+        s->field[i]->flags|= PART_INDIRECT_KEY_FLAG;
+        v_keys= TABLE_SHARE::V_KEYS;
+      }
     }
     bitmap_clear_all(&tmp_set);
   }
-  s->check_set_initialized= 1;
+  s->check_set_initialized= v_keys;
   if (s->tmp_table == NO_TMP_TABLE)
     mysql_mutex_unlock(&s->LOCK_share);
 }
@@ -7114,6 +7141,14 @@ void TABLE::create_key_part_by_field(KEY_PART_INFO *key_part_info,
   The function checks whether a possible key satisfies the constraints
   imposed on the keys of any temporary table.
 
+  We need to filter out BLOB columns here, because ref access optimizer creates
+  KEYUSE objects for equalities for non-key columns for two puproses:
+  1. To discover possible keys for derived_with_keys optimization
+  2. To do hash joins
+  For the purpose of #1, KEYUSE objects are not created for "blob_column=..." .
+  However, they might be created for #2. In order to catch that case, we filter
+  them out here.
+
   @return TRUE if the key is valid
   @return FALSE otherwise
 */
@@ -7129,11 +7164,12 @@ bool TABLE::check_tmp_key(uint key, uint key_parts,
   {
     uint fld_idx= next_field_no(arg);
     reg_field= field + fld_idx;
+    if ((*reg_field)->type() == MYSQL_TYPE_BLOB)
+      return FALSE;
     uint fld_store_len= (uint16) (*reg_field)->key_length();
     if ((*reg_field)->real_maybe_null())
       fld_store_len+= HA_KEY_NULL_LENGTH;
-    if ((*reg_field)->type() == MYSQL_TYPE_BLOB ||
-        (*reg_field)->real_type() == MYSQL_TYPE_VARCHAR ||
+    if ((*reg_field)->real_type() == MYSQL_TYPE_VARCHAR ||
         (*reg_field)->type() == MYSQL_TYPE_GEOMETRY)
       fld_store_len+= HA_KEY_BLOB_LENGTH;
     key_len+= fld_store_len;
@@ -8325,7 +8361,7 @@ int TABLE_LIST::fetch_number_of_rows()
   }
   if (is_materialized_derived() && !fill_me)
   {
-    table->file->stats.records= ((select_unit*)(get_unit()->result))->records;
+    table->file->stats.records= get_unit()->result->est_records;
     set_if_bigger(table->file->stats.records, 2);
     table->used_stat_records= table->file->stats.records;
   }
@@ -8742,6 +8778,7 @@ bool TR_table::update(ulonglong start_id, ulonglong end_id)
     return true;
 
   store(FLD_BEGIN_TS, thd->transaction_time());
+  thd->set_time();
   timeval end_time= {thd->query_start(), long(thd->query_start_sec_part())};
   store(FLD_TRX_ID, start_id);
   store(FLD_COMMIT_ID, end_id);

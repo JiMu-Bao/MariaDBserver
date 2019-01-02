@@ -581,6 +581,7 @@ typedef struct system_variables
   ha_rows max_join_size;
   ha_rows expensive_subquery_limit;
   ulong auto_increment_increment, auto_increment_offset;
+  uint eq_range_index_dive_limit;
   ulong column_compression_zlib_strategy;
   ulong lock_wait_timeout;
   ulong join_cache_level;
@@ -4035,6 +4036,10 @@ public:
     *format= (enum_binlog_format) variables.binlog_format;
     *current_format= current_stmt_binlog_format;
   }
+  inline enum_binlog_format get_current_stmt_binlog_format()
+  {
+    return current_stmt_binlog_format;
+  }
   inline void set_binlog_format(enum_binlog_format format,
                                 enum_binlog_format current_format)
   {
@@ -4078,11 +4083,6 @@ public:
       set_current_stmt_binlog_format_row();
 
     DBUG_VOID_RETURN;
-  }
-
-  inline enum_binlog_format get_current_stmt_binlog_format()
-  {
-    return current_stmt_binlog_format;
   }
 
   inline void set_current_stmt_binlog_format(enum_binlog_format format)
@@ -4628,6 +4628,7 @@ public:
 
   TMP_TABLE_SHARE* save_tmp_table_share(TABLE *table);
   void restore_tmp_table_share(TMP_TABLE_SHARE *share);
+  void close_unused_temporary_table_instances(const TABLE_LIST *tl);
 
 private:
   /* Whether a lock has been acquired? */
@@ -4957,7 +4958,8 @@ protected:
   SELECT_LEX_UNIT *unit;
   /* Something used only by the parser: */
 public:
-  select_result(THD *thd_arg): select_result_sink(thd_arg) {}
+  ha_rows est_records;  /* estimated number of records in the result */
+ select_result(THD *thd_arg): select_result_sink(thd_arg), est_records(0) {}
   void set_unit(SELECT_LEX_UNIT *unit_arg) { unit= unit_arg; }
   virtual ~select_result() {};
   /**
@@ -5035,6 +5037,14 @@ public:
     Currently all intercepting classes derive from select_result_interceptor.
   */
   virtual bool is_result_interceptor()=0;
+
+  /*
+    This method is used to distinguish an normal SELECT from the cursor
+    structure discovery for cursor%ROWTYPE routine variables.
+    If this method returns "true", then a SELECT execution performs only
+    all preparation stages, but does not fetch any rows.
+  */
+  virtual bool view_structure_only() const { return false; }
 };
 
 
@@ -5154,9 +5164,13 @@ private:
   {
     List<sp_variable> *spvar_list;
     uint field_count;
+    bool m_view_structure_only;
     bool send_data_to_variable_list(List<sp_variable> &vars, List<Item> &items);
   public:
-    Select_fetch_into_spvars(THD *thd_arg): select_result_interceptor(thd_arg) {}
+    Select_fetch_into_spvars(THD *thd_arg, bool view_structure_only)
+     :select_result_interceptor(thd_arg),
+      m_view_structure_only(view_structure_only)
+    {}
     void reset(THD *thd_arg)
     {
       select_result_interceptor::reset(thd_arg);
@@ -5169,16 +5183,17 @@ private:
     virtual bool send_eof() { return FALSE; }
     virtual int send_data(List<Item> &items);
     virtual int prepare(List<Item> &list, SELECT_LEX_UNIT *u);
+    virtual bool view_structure_only() const { return m_view_structure_only; }
 };
 
 public:
   sp_cursor()
-   :result(NULL),
+   :result(NULL, false),
     m_lex_keeper(NULL),
     server_side_cursor(NULL)
   { }
-  sp_cursor(THD *thd_arg, sp_lex_keeper *lex_keeper)
-   :result(thd_arg),
+  sp_cursor(THD *thd_arg, sp_lex_keeper *lex_keeper, bool view_structure_only)
+   :result(thd_arg, view_structure_only),
     m_lex_keeper(lex_keeper),
     server_side_cursor(NULL)
   {}
@@ -5189,8 +5204,6 @@ public:
   sp_lex_keeper *get_lex_keeper() { return m_lex_keeper; }
 
   int open(THD *thd);
-
-  int open_view_structure_only(THD *thd);
 
   int close(THD *thd);
 
@@ -5529,7 +5542,6 @@ public:
   TMP_TABLE_PARAM tmp_table_param;
   int write_err; /* Error code from the last send_data->ha_write_row call. */
   TABLE *table;
-  ha_rows records;
 
   select_unit(THD *thd_arg):
     select_result_interceptor(thd_arg),
@@ -5567,7 +5579,6 @@ public:
     curr_sel= UINT_MAX;
     step= UNION_TYPE;
     write_err= 0;
-    records= 0;
   }
   void change_select();
 };
@@ -5581,10 +5592,16 @@ class select_union_recursive :public select_unit
   TABLE *first_rec_table_to_update;
   /* The temporary tables used for recursive table references */
   List<TABLE> rec_tables;
+  /*
+    The count of how many times cleanup() was called with cleaned==false
+    for the unit specifying the recursive CTE for which this object was created
+    or for the unit specifying a CTE that mutually recursive with this CTE.
+  */
+  uint cleanup_count;
 
   select_union_recursive(THD *thd_arg):
     select_unit(thd_arg),
-    incr_table(0), first_rec_table_to_update(0) {};
+    incr_table(0), first_rec_table_to_update(0), cleanup_count(0) {};
 
   int send_data(List<Item> &items);
   bool create_result_table(THD *thd, List<Item> *column_types,

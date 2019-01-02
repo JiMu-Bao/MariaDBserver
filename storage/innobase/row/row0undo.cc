@@ -24,8 +24,6 @@ Row undo
 Created 1/8/1997 Heikki Tuuri
 *******************************************************/
 
-#include "ha_prototypes.h"
-
 #include "row0undo.h"
 #include "fsp0fsp.h"
 #include "mach0data.h"
@@ -236,7 +234,7 @@ row_undo_search_clust_to_pcur(
 					clust_index, node->update, node->heap);
 		} else {
 			ut_ad((node->row->info_bits == REC_INFO_MIN_REC_FLAG)
-			      == (node->rec_type == TRX_UNDO_INSERT_DEFAULT));
+			      == (node->rec_type == TRX_UNDO_INSERT_METADATA));
 			node->undo_row = NULL;
 			node->undo_ext = NULL;
 		}
