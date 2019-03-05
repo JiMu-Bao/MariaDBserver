@@ -2,7 +2,7 @@
 
 Copyright (c) 1995, 2018, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2008, Google Inc.
-Copyright (c) 2013, 2018, MariaDB Corporation.
+Copyright (c) 2013, 2019, MariaDB Corporation.
 
 Portions of this file contain modifications contributed and copyrighted by
 Google, Inc. Those modifications are gratefully acknowledged and are described
@@ -526,13 +526,13 @@ decompress_with_slot:
 		/* Verify encryption checksum before we even try to
 		decrypt. */
 		if (!fil_space_verify_crypt_checksum(dst_frame, bpage->size)) {
+decrypt_failed:
 			ib::error() << "Encrypted page " << bpage->id
 				    << " in file " << space->chain.start->name
 				    << " looks corrupted; key_version="
 				    << mach_read_from_4(
 					    FIL_PAGE_FILE_FLUSH_LSN_OR_KEY_VERSION
 					    + dst_frame);
-decrypt_failed:
 			/* Mark page encrypted in case it should be. */
 			if (space->crypt_data->type
 			    != CRYPT_SCHEME_UNENCRYPTED) {
@@ -1011,7 +1011,10 @@ buf_page_is_corrupted(
 
 	/* Check whether the checksum fields have correct values */
 
-	if (srv_checksum_algorithm == SRV_CHECKSUM_ALGORITHM_NONE) {
+	const srv_checksum_algorithm_t curr_algo =
+		static_cast<srv_checksum_algorithm_t>(srv_checksum_algorithm);
+
+	if (curr_algo == SRV_CHECKSUM_ALGORITHM_NONE) {
 		return(false);
 	}
 
@@ -1049,9 +1052,6 @@ buf_page_is_corrupted(
 #endif /* UNIV_INNOCHECKSUM */
 		return(false);
 	}
-
-	const srv_checksum_algorithm_t	curr_algo =
-		static_cast<srv_checksum_algorithm_t>(srv_checksum_algorithm);
 
 	switch (curr_algo) {
 	case SRV_CHECKSUM_ALGORITHM_STRICT_CRC32:
@@ -1097,8 +1097,15 @@ buf_page_is_corrupted(
 		    != mach_read_from_4(read_buf + FIL_PAGE_LSN)
 		    && checksum_field2 != BUF_NO_CHECKSUM_MAGIC) {
 
-			if (srv_checksum_algorithm
-			    == SRV_CHECKSUM_ALGORITHM_CRC32) {
+			if (curr_algo == SRV_CHECKSUM_ALGORITHM_CRC32) {
+				DBUG_EXECUTE_IF(
+					"page_intermittent_checksum_mismatch", {
+					static int page_counter;
+					if (page_counter++ == 2) {
+						checksum_field2++;
+					}
+				});
+
 				crc32 = buf_page_check_crc32(read_buf,
 							     checksum_field2);
 				crc32_inited = true;
@@ -1109,7 +1116,7 @@ buf_page_is_corrupted(
 					return true;
 				}
 			} else {
-				ut_ad(srv_checksum_algorithm
+				ut_ad(curr_algo
 				      == SRV_CHECKSUM_ALGORITHM_INNODB);
 
 				if (checksum_field2
@@ -1127,9 +1134,7 @@ buf_page_is_corrupted(
 
 		if (checksum_field1 == 0
 		    || checksum_field1 == BUF_NO_CHECKSUM_MAGIC) {
-		} else if (srv_checksum_algorithm
-			   == SRV_CHECKSUM_ALGORITHM_CRC32) {
-
+		} else if (curr_algo == SRV_CHECKSUM_ALGORITHM_CRC32) {
 			if (!crc32_inited) {
 				crc32 = buf_page_check_crc32(
 					read_buf, checksum_field2);
@@ -1142,8 +1147,7 @@ buf_page_is_corrupted(
 				return true;
 			}
 		} else {
-			ut_ad(srv_checksum_algorithm
-			      == SRV_CHECKSUM_ALGORITHM_INNODB);
+			ut_ad(curr_algo == SRV_CHECKSUM_ALGORITHM_INNODB);
 
 			if (checksum_field1
 			    != buf_calc_page_new_checksum(read_buf)) {
@@ -3823,18 +3827,10 @@ err_exit:
 	ut_ad(!buf_pool_watch_is_sentinel(buf_pool, bpage));
 
 	switch (buf_page_get_state(bpage)) {
-	case BUF_BLOCK_POOL_WATCH:
-	case BUF_BLOCK_NOT_USED:
-	case BUF_BLOCK_READY_FOR_USE:
-	case BUF_BLOCK_MEMORY:
-	case BUF_BLOCK_REMOVE_HASH:
-		ut_error;
-
 	case BUF_BLOCK_ZIP_PAGE:
 	case BUF_BLOCK_ZIP_DIRTY:
 		buf_block_fix(bpage);
 		block_mutex = &buf_pool->zip_mutex;
-		mutex_enter(block_mutex);
 		goto got_block;
 	case BUF_BLOCK_FILE_PAGE:
 		/* Discard the uncompressed page frame if possible. */
@@ -3849,16 +3845,16 @@ err_exit:
 				      __FILE__, __LINE__);
 
 		block_mutex = &((buf_block_t*) bpage)->mutex;
-
-		mutex_enter(block_mutex);
-
 		goto got_block;
+	default:
+		break;
 	}
 
 	ut_error;
 	goto err_exit;
 
 got_block:
+	mutex_enter(block_mutex);
 	must_read = buf_page_get_io_fix(bpage) == BUF_IO_READ;
 
 	rw_lock_s_unlock(hash_lock);
@@ -4448,7 +4444,7 @@ loop:
 				<< ". The most probable cause"
 				" of this error may be that the"
 				" table has been corrupted."
-				" See https://mariadb.com/kb/en/library/xtradbinnodb-recovery-modes/";
+				" See https://mariadb.com/kb/en/library/innodb-recovery-modes/";
 		}
 
 #if defined UNIV_DEBUG || defined UNIV_BUF_DEBUG
@@ -4964,10 +4960,7 @@ buf_page_optimistic_get(
 	}
 
 	if (!success) {
-		buf_page_mutex_enter(block);
 		buf_block_buf_fix_dec(block);
-		buf_page_mutex_exit(block);
-
 		return(FALSE);
 	}
 
@@ -4981,10 +4974,7 @@ buf_page_optimistic_get(
 			rw_lock_x_unlock(&block->lock);
 		}
 
-		buf_page_mutex_enter(block);
 		buf_block_buf_fix_dec(block);
-		buf_page_mutex_exit(block);
-
 		return(FALSE);
 	}
 
@@ -5087,10 +5077,7 @@ buf_page_get_known_nowait(
 	}
 
 	if (!success) {
-		buf_page_mutex_enter(block);
 		buf_block_buf_fix_dec(block);
-		buf_page_mutex_exit(block);
-
 		return(FALSE);
 	}
 
@@ -5184,10 +5171,7 @@ buf_page_try_get_func(
 	}
 
 	if (!success) {
-		buf_page_mutex_enter(block);
 		buf_block_buf_fix_dec(block);
-		buf_page_mutex_exit(block);
-
 		return(NULL);
 	}
 

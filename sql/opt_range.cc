@@ -1562,6 +1562,7 @@ failure:
   head->column_bitmaps_set(save_read_set, save_write_set, save_vcol_set);
   delete file;
   file= save_file;
+  free_file= false;
   DBUG_RETURN(1);
 }
 
@@ -2730,10 +2731,6 @@ bool create_key_parts_for_pseudo_indexes(RANGE_OPT_PARAM *param,
 {
   Field **field_ptr;
   TABLE *table= param->table;
-  partition_info *part_info= NULL;
-  #ifdef WITH_PARTITION_STORAGE_ENGINE
-    part_info= table->part_info;
-  #endif
   uint parts= 0;
 
   for (field_ptr= table->field; *field_ptr; field_ptr++)
