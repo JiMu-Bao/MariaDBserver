@@ -1,7 +1,7 @@
 /*****************************************************************************
 
 Copyright (c) 1995, 2017, Oracle and/or its affiliates. All Rights Reserved.
-Copyright (c) 2013, 2018, MariaDB Corporation.
+Copyright (c) 2013, 2019, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -84,6 +84,9 @@ struct fil_space_t {
 				Protected by log_sys.mutex.
 				If and only if this is nonzero, the
 				tablespace will be in named_spaces. */
+	/** Log sequence number of the latest MLOG_INDEX_LOAD record
+	that was found while parsing the redo log */
+	lsn_t		enable_lsn;
 	bool		stop_new_ops;
 				/*!< we set this true when we start
 				deleting a single-table tablespace.
@@ -102,7 +105,7 @@ struct fil_space_t {
 	ulint		redo_skipped_count;
 				/*!< reference count for operations who want
 				to skip redo log in the file space in order
-				to make fsp_space_modify_check pass.
+				to make modify_check() pass.
 				Uses my_atomic_loadlint() and friends. */
 #endif
 	fil_type_t	purpose;/*!< purpose */
@@ -199,6 +202,12 @@ struct fil_space_t {
 	fil_node_t* add(const char* name, pfs_os_file_t handle,
 			ulint size, bool is_raw, bool atomic_write,
 			ulint max_pages = ULINT_MAX);
+#ifdef UNIV_DEBUG
+	/** Assert that the mini-transaction is compatible with
+	updating an allocation bitmap page.
+	@param[in]	mtr	mini-transaction */
+	void modify_check(const mtr_t& mtr) const;
+#endif /* UNIV_DEBUG */
 
 	/** Try to reserve free extents.
 	@param[in]	n_free_now	current number of free extents
@@ -1034,9 +1043,6 @@ memory cache. Note that if we have not done a crash recovery at the database
 startup, there may be many tablespaces which are not yet in the memory cache.
 @param[in]	id		Tablespace ID
 @param[in]	name		Tablespace name used in fil_space_create().
-@param[in]	print_error_if_does_not_exist
-				Print detailed error information to the
-error log if a matching tablespace is not found from memory.
 @param[in]	table_flags	table flags
 @return the tablespace
 @retval	NULL	if no matching tablespace exists in the memory cache */
@@ -1044,7 +1050,6 @@ fil_space_t*
 fil_space_for_table_exists_in_mem(
 	ulint		id,
 	const char*	name,
-	bool		print_error_if_does_not_exist,
 	ulint		table_flags);
 
 /** Try to extend a tablespace if it is smaller than the specified size.
@@ -1250,16 +1255,12 @@ fil_names_write_if_was_clean(
 	return(was_clean);
 }
 
-extern volatile bool	recv_recovery_on;
-
 /** During crash recovery, open a tablespace if it had not been opened
 yet, to get valid size and flags.
 @param[in,out]	space	tablespace */
-inline
-void
-fil_space_open_if_needed(
-	fil_space_t*	space)
+inline void fil_space_open_if_needed(fil_space_t* space)
 {
+	ut_d(extern volatile bool recv_recovery_on);
 	ut_ad(recv_recovery_on);
 
 	if (space->size == 0) {
@@ -1267,10 +1268,7 @@ fil_space_open_if_needed(
 		until the files are opened for the first time.
 		fil_space_get_size() will open the file
 		and adjust the size and flags. */
-#ifdef UNIV_DEBUG
-		ulint		size	=
-#endif /* UNIV_DEBUG */
-			fil_space_get_size(space->id);
+		ut_d(ulint size	=) fil_space_get_size(space->id);
 		ut_ad(size == space->size);
 	}
 }

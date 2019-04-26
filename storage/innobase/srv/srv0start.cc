@@ -1400,10 +1400,6 @@ dberr_t srv_start(bool create_new_db)
 
 #ifdef UNIV_IBUF_DEBUG
 	ib::info() << "!!!!!!!! UNIV_IBUF_DEBUG switched on !!!!!!!!!";
-# ifdef UNIV_IBUF_COUNT_DEBUG
-	ib::info() << "!!!!!!!! UNIV_IBUF_COUNT_DEBUG switched on !!!!!!!!!";
-	ib::error() << "Crash recovery will fail with UNIV_IBUF_COUNT_DEBUG";
-# endif
 #endif
 
 #ifdef UNIV_LOG_LSN_DEBUG
@@ -1984,7 +1980,8 @@ files_checked:
 
 			recv_apply_hashed_log_recs(true);
 
-			if (recv_sys->found_corrupt_log) {
+			if (recv_sys->found_corrupt_log
+			    || recv_sys->found_corrupt_fs) {
 				return(srv_init_abort(DB_CORRUPTION));
 			}
 
@@ -2256,19 +2253,8 @@ files_checked:
 			every table in the InnoDB data dictionary that has
 			an .ibd file.
 
-			We also determine the maximum tablespace id used.
-
-			The 'validate' flag indicates that when a tablespace
-			is opened, we also read the header page and validate
-			the contents to the data dictionary. This is time
-			consuming, especially for databases with lots of ibd
-			files.  So only do it after a crash and not forcing
-			recovery.  Open rw transactions at this point is not
-			a good reason to validate. */
-			bool validate = recv_needed_recovery
-				&& srv_force_recovery == 0;
-
-			dict_check_tablespaces_and_store_max_id(validate);
+			We also determine the maximum tablespace id used. */
+			dict_check_tablespaces_and_store_max_id();
 		}
 
 		/* Fix-up truncate of table if server crashed while truncate

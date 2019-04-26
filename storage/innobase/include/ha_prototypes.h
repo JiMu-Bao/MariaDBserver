@@ -40,7 +40,6 @@ class THD;
 // JAN: TODO missing features:
 #undef MYSQL_FT_INIT_EXT
 #undef MYSQL_PFS
-#undef MYSQL_RENAME_INDEX
 #undef MYSQL_STORE_FTS_DOC_ID
 
 /*******************************************************************//**
@@ -554,20 +553,6 @@ ICP_RESULT
 innobase_index_cond(
 /*================*/
 	void*	file)	/*!< in/out: pointer to ha_innobase */
-	MY_ATTRIBUTE((warn_unused_result));
-
-/******************************************************************//**
-Gets information on the durability property requested by thread.
-Used when writing either a prepare or commit record to the log
-buffer.
-@return the durability property. */
-
-#include <dur_prop.h>
-
-enum durability_properties
-thd_requested_durability(
-/*=====================*/
-	const THD* thd)	/*!< in: thread handle */
 	MY_ATTRIBUTE((warn_unused_result));
 
 /** Update the system variable with the given value of the InnoDB

@@ -697,3 +697,23 @@ void wsrep_thd_auto_increment_variables(THD* thd,
     *increment= thd->variables.auto_increment_increment;
   }
 }
+
+my_bool wsrep_thd_is_applier(MYSQL_THD thd)
+{
+  my_bool is_applier= false;
+
+  if (thd && thd->wsrep_applier)
+    is_applier= true;
+
+  return (is_applier);
+}
+
+void wsrep_set_load_multi_commit(THD *thd, bool split)
+{
+   thd->wsrep_split_flag= split;
+}
+
+bool wsrep_is_load_multi_commit(THD *thd)
+{
+   return thd->wsrep_split_flag;
+}

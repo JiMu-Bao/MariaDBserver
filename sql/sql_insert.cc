@@ -1491,7 +1491,7 @@ bool mysql_prepare_insert(THD *thd, TABLE_LIST *table_list,
     DBUG_RETURN(TRUE); 
   if (table_list->handle_derived(thd->lex, DT_MERGE_FOR_INSERT))
     DBUG_RETURN(TRUE); 
-  if (mysql_handle_list_of_derived(thd->lex, table_list, DT_PREPARE))
+  if (thd->lex->handle_list_of_derived(table_list, DT_PREPARE))
     DBUG_RETURN(TRUE); 
   /*
     For subqueries in VALUES() we should not see the table in which we are
@@ -1584,7 +1584,6 @@ bool mysql_prepare_insert(THD *thd, TABLE_LIST *table_list,
       DBUG_RETURN(TRUE);
     }
     select_lex->fix_prepare_information(thd, &fake_conds, &fake_conds);
-    select_lex->first_execution= 0;
   }
   /*
     Only call prepare_for_posistion() if we are not performing a DELAYED
@@ -4491,14 +4490,12 @@ select_create::binlog_show_create_table(TABLE **tables, uint count)
   DBUG_ASSERT(thd->is_current_stmt_binlog_format_row());
   DBUG_ASSERT(tables && *tables && count > 0);
 
-  char buf[2048];
-  String query(buf, sizeof(buf), system_charset_info);
+  StringBuffer<2048> query(system_charset_info);
   int result;
   TABLE_LIST tmp_table_list;
 
-  memset(&tmp_table_list, 0, sizeof(tmp_table_list));
+  tmp_table_list.reset();
   tmp_table_list.table = *tables;
-  query.length(0);      // Have to zero it since constructor doesn't
 
   result= show_create_table(thd, &tmp_table_list, &query,
                             create_info, WITH_DB_NAME);

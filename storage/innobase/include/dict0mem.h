@@ -2,7 +2,7 @@
 
 Copyright (c) 1996, 2017, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2012, Facebook Inc.
-Copyright (c) 2013, 2018, MariaDB Corporation.
+Copyright (c) 2013, 2019, MariaDB Corporation.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -476,14 +476,7 @@ void
 dict_mem_table_free_foreign_vcol_set(
 	dict_table_t*	table);
 
-/** Create a temporary tablename like "#sql-ibtid-inc where
-  tid = the Table ID
-  inc = a randomly initialized number that is incremented for each file
-The table ID is a 64 bit integer, can use up to 20 digits, and is
-initialized at bootstrap. The second number is 32 bits, can use up to 10
-digits, and is initialized at startup to a randomly distributed number.
-It is hoped that the combination of these two numbers will provide a
-reasonably unique temporary file name.
+/** Create a temporary tablename like "#sql-ibNNN".
 @param[in]	heap	A memory heap
 @param[in]	dbtab	Table name in the form database/table name
 @param[in]	id	Table id
@@ -1511,6 +1504,13 @@ struct dict_table_t {
 		return(UNIV_LIKELY(!file_unreadable));
 	}
 
+	/** Check if a table name contains the string "/#sql"
+	which denotes temporary or intermediate tables in MariaDB. */
+	static bool is_temporary_name(const char* name)
+	{
+		return strstr(name, "/" TEMP_FILE_PREFIX) != NULL;
+	}
+
 	/** @return whether instant ADD COLUMN is in effect */
 	bool is_instant() const
 	{
@@ -1944,6 +1944,11 @@ public:
 inline void dict_index_t::set_modified(mtr_t& mtr) const
 {
 	mtr.set_named_space(table->space);
+}
+
+inline bool table_name_t::is_temporary() const
+{
+	return dict_table_t::is_temporary_name(m_name);
 }
 
 inline bool dict_index_t::is_readable() const { return table->is_readable(); }

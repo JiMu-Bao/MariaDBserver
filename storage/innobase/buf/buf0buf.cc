@@ -938,6 +938,7 @@ buf_page_is_corrupted(
 	const void* 	 	space)
 #endif
 {
+	ut_ad(page_size.logical() == srv_page_size);
 #ifndef UNIV_INNOCHECKSUM
 	DBUG_EXECUTE_IF("buf_page_import_corrupt_failure", return(true); );
 #endif
@@ -1031,26 +1032,31 @@ buf_page_is_corrupted(
 
 	compile_time_assert(!(FIL_PAGE_LSN % 8));
 
-	/* declare empty pages non-corrupted */
-	if (checksum_field1 == 0
-	    && checksum_field2 == 0
-	    && *reinterpret_cast<const ib_uint64_t*>(
-		    read_buf + FIL_PAGE_LSN) == 0) {
-
-		/* make sure that the page is really empty */
-		for (ulint i = 0; i < page_size.logical(); i++) {
-			if (read_buf[i] != 0) {
-				return(true);
+	/* A page filled with NUL bytes is considered not corrupted.
+	The FIL_PAGE_FILE_FLUSH_LSN field may be written nonzero for
+	the first page of each file of the system tablespace.
+	Ignore it for the system tablespace. */
+	if (!checksum_field1 && !checksum_field2) {
+		ulint i = 0;
+		do {
+			if (read_buf[i]) {
+				return true;
 			}
+		} while (++i < FIL_PAGE_FILE_FLUSH_LSN_OR_KEY_VERSION);
+
+#ifndef UNIV_INNOCHECKSUM
+		if (!space || !space->id) {
+			/* Skip FIL_PAGE_FILE_FLUSH_LSN_OR_KEY_VERSION
+			in the system tablespace. */
+			i += 8;
 		}
-#ifdef UNIV_INNOCHECKSUM
-		if (log_file) {
-			fprintf(log_file, "Page::%llu"
-				" is empty and uncorrupted\n",
-				cur_page_num);
-		}
-#endif /* UNIV_INNOCHECKSUM */
-		return(false);
+#endif
+		do {
+			if (read_buf[i]) {
+				return true;
+			}
+		} while (++i < srv_page_size);
+		return false;
 	}
 
 	switch (curr_algo) {
@@ -1562,17 +1568,16 @@ buf_chunk_init(
 
 	/* Round down to a multiple of page size,
 	although it already should be. */
-	mem_size = ut_2pow_round(mem_size, ulint(srv_page_size));
+	mem_size = ut_2pow_round<ulint>(mem_size, srv_page_size);
 	/* Reserve space for the block descriptors. */
-	mem_size += ut_2pow_round((mem_size >> srv_page_size_shift)
-				  * (sizeof *block)
-				  + (srv_page_size - 1),
-				  ulint(srv_page_size));
+	mem_size += ut_2pow_round<ulint>((mem_size >> srv_page_size_shift)
+					 * (sizeof *block)
+					 + (srv_page_size - 1),
+					 srv_page_size);
 
 	DBUG_EXECUTE_IF("ib_buf_chunk_init_fails", return(NULL););
 
-	chunk->mem = buf_pool->allocator.allocate_large(mem_size,
-							&chunk->mem_pfx, true);
+	chunk->mem = buf_pool->allocator.allocate_large_dontdump(mem_size, &chunk->mem_pfx);
 
 	if (UNIV_UNLIKELY(chunk->mem == NULL)) {
 
@@ -1601,7 +1606,7 @@ buf_chunk_init(
 	chunk->blocks = (buf_block_t*) chunk->mem;
 
 	/* Align a pointer to the first frame.  Note that when
-	os_large_page_size is smaller than srv_page_size,
+	opt_large_page_size is smaller than srv_page_size,
 	we may allocate one fewer block than requested.  When
 	it is bigger, we may allocate more blocks than requested. */
 
@@ -1865,9 +1870,8 @@ buf_pool_init_instance(
 							&block->debug_latch));
 					}
 
-					buf_pool->allocator.deallocate_large(
-						chunk->mem, &chunk->mem_pfx, chunk->mem_size(),
-						true);
+					buf_pool->allocator.deallocate_large_dodump(
+						chunk->mem, &chunk->mem_pfx, chunk->mem_size());
 				}
 				ut_free(buf_pool->chunks);
 				buf_pool_mutex_exit(buf_pool);
@@ -2014,8 +2018,8 @@ buf_pool_free_instance(
 			ut_d(rw_lock_free(&block->debug_latch));
 		}
 
-		buf_pool->allocator.deallocate_large(
-			chunk->mem, &chunk->mem_pfx, true);
+		buf_pool->allocator.deallocate_large_dodump(
+			chunk->mem, &chunk->mem_pfx, chunk->mem_size());
 	}
 
 	for (ulint i = BUF_FLUSH_LRU; i < BUF_FLUSH_N_TYPES; ++i) {
@@ -2892,8 +2896,8 @@ withdraw_retry:
 						&block->debug_latch));
 				}
 
-				buf_pool->allocator.deallocate_large(
-					chunk->mem, &chunk->mem_pfx, true);
+				buf_pool->allocator.deallocate_large_dodump(
+					chunk->mem, &chunk->mem_pfx, chunk->mem_size());
 
 				sum_freed += chunk->size;
 
@@ -3893,10 +3897,6 @@ got_block:
 		}
 	}
 
-#ifdef UNIV_IBUF_COUNT_DEBUG
-	ut_a(ibuf_count_get(page_id) == 0);
-#endif /* UNIV_IBUF_COUNT_DEBUG */
-
 	return(bpage);
 }
 
@@ -4259,7 +4259,8 @@ buf_page_get_gen(
 		Skip the assertion on space_page_size. */
 		break;
 	case BUF_PEEK_IF_IN_POOL:
-		/* In this mode, the caller may pass a dummy page size,
+	case BUF_GET_IF_IN_POOL:
+		/* The caller may pass a dummy page size,
 		because it does not really matter. */
 		break;
 	default:
@@ -4268,7 +4269,6 @@ buf_page_get_gen(
 		ut_ad(rw_latch == RW_NO_LATCH);
 		/* fall through */
 	case BUF_GET:
-	case BUF_GET_IF_IN_POOL:
 	case BUF_GET_IF_IN_POOL_OR_WATCH:
 	case BUF_GET_POSSIBLY_FREED:
 		bool			found;
@@ -4671,20 +4671,16 @@ evict_from_pool:
 				buf_pool_mutex_exit(buf_pool);
 				rw_lock_x_unlock(&fix_block->lock);
 
-				*err = DB_PAGE_CORRUPTED;
+				if (err) {
+					*err = DB_PAGE_CORRUPTED;
+				}
 				return NULL;
 			}
 		}
 
-		if (!recv_no_ibuf_operations) {
-			if (access_time) {
-#ifdef UNIV_IBUF_COUNT_DEBUG
-				ut_a(ibuf_count_get(page_id) == 0);
-#endif /* UNIV_IBUF_COUNT_DEBUG */
-			} else {
-				ibuf_merge_or_delete_for_page(
-					block, page_id, &page_size, TRUE);
-			}
+		if (!access_time && !recv_no_ibuf_operations) {
+			ibuf_merge_or_delete_for_page(
+				block, page_id, &page_size, TRUE);
 		}
 
 		buf_pool_mutex_enter(buf_pool);
@@ -4886,10 +4882,6 @@ evict_from_pool:
 		buf_read_ahead_linear(page_id, page_size, ibuf_inside(mtr));
 	}
 
-#ifdef UNIV_IBUF_COUNT_DEBUG
-	ut_a(ibuf_count_get(fix_block->page.id) == 0);
-#endif
-
 	ut_ad(!rw_lock_own_flagged(hash_lock,
 				   RW_LOCK_FLAG_X | RW_LOCK_FLAG_S));
 
@@ -4997,10 +4989,6 @@ buf_page_optimistic_get(
 				      ibuf_inside(mtr));
 	}
 
-#ifdef UNIV_IBUF_COUNT_DEBUG
-	ut_a(ibuf_count_get(block->page.id) == 0);
-#endif /* UNIV_IBUF_COUNT_DEBUG */
-
 	buf_pool = buf_pool_from_block(block);
 	buf_pool->stat.n_page_gets++;
 
@@ -5104,9 +5092,6 @@ buf_page_get_known_nowait(
 	}
 #endif /* UNIV_DEBUG */
 
-#ifdef UNIV_IBUF_COUNT_DEBUG
-	ut_a((mode == BUF_KEEP_OLD) || ibuf_count_get(block->page.id) == 0);
-#endif
 	buf_pool->stat.n_page_gets++;
 
 	return(TRUE);
@@ -5190,10 +5175,6 @@ buf_page_try_get_func(
 	buf_block_dbg_add_level(block, SYNC_NO_ORDER_CHECK);
 
 	buf_pool->stat.n_page_gets++;
-
-#ifdef UNIV_IBUF_COUNT_DEBUG
-	ut_a(ibuf_count_get(block->page.id) == 0);
-#endif /* UNIV_IBUF_COUNT_DEBUG */
 
 	return(block);
 }
@@ -5593,11 +5574,6 @@ buf_page_create(
 	if (block
 	    && buf_page_in_file(&block->page)
 	    && !buf_pool_watch_is_sentinel(buf_pool, &block->page)) {
-
-#ifdef UNIV_IBUF_COUNT_DEBUG
-		ut_a(ibuf_count_get(page_id) == 0);
-#endif /* UNIV_IBUF_COUNT_DEBUG */
-
 		ut_d(block->page.file_page_was_freed = FALSE);
 
 		/* Page can be found in buf_pool */
@@ -5606,7 +5582,15 @@ buf_page_create(
 
 		buf_block_free(free_block);
 
-		return(buf_page_get_with_no_latch(page_id, page_size, mtr));
+		if (!recv_recovery_is_on()) {
+			return buf_page_get_with_no_latch(page_id, page_size,
+							  mtr);
+		}
+
+		mutex_exit(&recv_sys->mutex);
+		block = buf_page_get_with_no_latch(page_id, page_size, mtr);
+		mutex_enter(&recv_sys->mutex);
+		return block;
 	}
 
 	/* If we get here, the page was not in buf_pool: init it there */
@@ -5672,7 +5656,9 @@ buf_page_create(
 
 	/* Delete possible entries for the page from the insert buffer:
 	such can exist if the page belonged to an index which was dropped */
-	ibuf_merge_or_delete_for_page(NULL, page_id, &page_size, TRUE);
+	if (!recv_recovery_is_on()) {
+		ibuf_merge_or_delete_for_page(NULL, page_id, &page_size, TRUE);
+	}
 
 	frame = block->frame;
 
@@ -5687,13 +5673,11 @@ buf_page_create(
 	(3) key_version on encrypted pages (not page 0:0) */
 
 	memset(frame + FIL_PAGE_FILE_FLUSH_LSN_OR_KEY_VERSION, 0, 8);
+	memset(frame + FIL_PAGE_LSN, 0, 8);
 
 #if defined UNIV_DEBUG || defined UNIV_BUF_DEBUG
 	ut_a(++buf_dbg_counter % 5771 || buf_validate());
 #endif /* UNIV_DEBUG || UNIV_BUF_DEBUG */
-#ifdef UNIV_IBUF_COUNT_DEBUG
-	ut_a(ibuf_count_get(block->page.id) == 0);
-#endif
 	return(block);
 }
 
@@ -6095,9 +6079,7 @@ database_corrupted:
 				page_not_corrupt: bpage = bpage; );
 
 		if (recv_recovery_is_on()) {
-			/* Pages must be uncompressed for crash recovery. */
-			ut_a(uncompressed);
-			recv_recover_page(TRUE, (buf_block_t*) bpage);
+			recv_recover_page(bpage);
 		}
 
 		/* If space is being truncated then avoid ibuf operation.
@@ -6117,7 +6099,7 @@ database_corrupted:
 					<< " encrypted. However key "
 					"management plugin or used "
 					<< "key_version " << key_version
-					<< "is not found or"
+					<< " is not found or"
 					" used encryption algorithm or method does not match."
 					" Can't continue opening the table.";
 			} else {
@@ -6143,14 +6125,6 @@ database_corrupted:
 	buf_pool_mutex_enter(buf_pool);
 	mutex_enter(block_mutex);
 
-#ifdef UNIV_IBUF_COUNT_DEBUG
-	if (io_type == BUF_IO_WRITE || uncompressed) {
-		/* For BUF_IO_READ of compressed-only blocks, the
-		buffered operations will be merged by buf_page_get_gen()
-		after the block has been uncompressed. */
-		ut_a(ibuf_count_get(bpage->id) == 0);
-	}
-#endif
 	/* Because this thread which does the unlocking is not the same that
 	did the locking, we use a pass value != 0 in unlock, which simply
 	removes the newest lock debug record, without checking the thread
@@ -6379,11 +6353,6 @@ buf_pool_validate_instance(
 						buf_pool, block->page.id)
 				     == &block->page);
 
-#ifdef UNIV_IBUF_COUNT_DEBUG
-				ut_a(buf_page_get_io_fix(&block->page)
-				     == BUF_IO_READ
-				     || !ibuf_count_get(block->page.id));
-#endif
 				switch (buf_page_get_io_fix(&block->page)) {
 				case BUF_IO_NONE:
 					break;

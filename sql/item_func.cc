@@ -1,5 +1,5 @@
 /* Copyright (c) 2000, 2015, Oracle and/or its affiliates.
-   Copyright (c) 2009, 2017, MariaDB
+   Copyright (c) 2009, 2019, MariaDB
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -67,18 +67,6 @@ bool check_reserved_words(const LEX_CSTRING *name)
       lex_string_eq(name, STRING_WITH_LEN("SESSION")))
     return TRUE;
   return FALSE;
-}
-
-
-/**
-  @return
-    TRUE if item is a constant
-*/
-
-bool
-eval_const_cond(COND *cond)
-{
-  return ((Item_func*) cond)->val_int() ? TRUE : FALSE;
 }
 
 

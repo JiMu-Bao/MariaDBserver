@@ -494,8 +494,6 @@ row_ins_cascade_calc_update_vec(
 	doc_id_t	new_doc_id = FTS_NULL_DOC_ID;
 	ulint		prefix_col;
 
-	ut_a(node);
-	ut_a(foreign);
 	ut_a(cascade);
 	ut_a(table);
 	ut_a(index);
@@ -957,7 +955,7 @@ row_ins_foreign_fill_virtual(
 	upd_field_t*	upd_field;
 	dict_vcol_set*	v_cols = foreign->v_cols;
 	update->old_vrow = row_build(
-		ROW_COPY_POINTERS, index, rec,
+		ROW_COPY_DATA, index, rec,
 		offsets, index->table, NULL, NULL,
 		&ext, cascade->heap);
 	n_diff = update->n_fields;
@@ -1092,10 +1090,6 @@ row_ins_foreign_check_on_constraint(
 	doc_id_t	doc_id = FTS_NULL_DOC_ID;
 
 	DBUG_ENTER("row_ins_foreign_check_on_constraint");
-	ut_a(thr);
-	ut_a(foreign);
-	ut_a(pcur);
-	ut_a(mtr);
 
 	trx = thr_get_trx(thr);
 
@@ -1413,9 +1407,9 @@ row_ins_foreign_check_on_constraint(
 	if (table->versioned() && cascade->is_delete != PLAIN_DELETE
 	    && cascade->update->affects_versioned()) {
 		ut_ad(!cascade->historical_heap);
-		cascade->historical_heap = mem_heap_create(128);
+		cascade->historical_heap = mem_heap_create(srv_page_size);
 		cascade->historical_row = row_build(
-			ROW_COPY_POINTERS, clust_index, clust_rec, NULL, table,
+			ROW_COPY_DATA, clust_index, clust_rec, NULL, table,
 			NULL, NULL, NULL, cascade->historical_heap);
 	}
 
@@ -3017,7 +3011,7 @@ row_ins_sec_index_entry_low(
 				"Table %s is encrypted but encryption service or"
 				" used key_id is not available. "
 				" Can't continue reading table.",
-				index->table->name);
+				index->table->name.m_name);
 			index->table->file_unreadable = true;
 		}
 		goto func_exit;

@@ -279,7 +279,6 @@ static void prepare_record_for_error_message(int error, TABLE *table)
     order_num		number of elemen in ORDER BY clause
     order		ORDER BY clause list
     limit		limit clause
-    handle_duplicates	how to handle duplicates
 
   RETURN
     0  - OK
@@ -294,8 +293,8 @@ int mysql_update(THD *thd,
 		 List<Item> &values,
                  COND *conds,
                  uint order_num, ORDER *order,
-		 ha_rows limit,
-		 enum enum_duplicates handle_duplicates, bool ignore,
+                 ha_rows limit,
+                 bool ignore,
                  ha_rows *found_return, ha_rows *updated_return)
 {
   bool		using_limit= limit != HA_POS_ERROR;
@@ -355,6 +354,8 @@ int mysql_update(THD *thd,
   }
   if (lock_tables(thd, table_list, table_count, 0))
     DBUG_RETURN(1);
+
+  (void) read_statistics_for_tables_if_needed(thd, table_list);
 
   THD_STAGE_INFO(thd, stage_init_update);
   if (table_list->handle_derived(thd->lex, DT_MERGE_FOR_INSERT))
@@ -957,6 +958,7 @@ update_begin:
             if (table->versioned(VERS_TIMESTAMP))
             {
               store_record(table, record[2]);
+              table->mark_columns_per_binlog_row_image();
               error= vers_insert_history_row(table);
               restore_record(table, record[2]);
             }
@@ -1688,6 +1690,7 @@ int mysql_multi_update_prepare(THD *thd)
   {
     DBUG_RETURN(TRUE);
   }
+  (void) read_statistics_for_tables_if_needed(thd, table_list);
   /* @todo: downgrade the metadata locks here. */
 
   /*

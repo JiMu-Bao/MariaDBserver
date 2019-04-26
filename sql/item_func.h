@@ -2404,7 +2404,6 @@ class Item_func_set_user_var :public Item_func_user_var
        user variable it the first connection context).
   */
   my_thread_id entry_thread_id;
-  char buffer[MAX_FIELD_WIDTH];
   String value;
   my_decimal decimal_buff;
   bool null_item;
@@ -3162,7 +3161,6 @@ Item *get_system_var(THD *thd, enum_var_type var_type,
 extern bool check_reserved_words(const LEX_CSTRING *name);
 double my_double_round(double value, longlong dec, bool dec_unsigned,
                        bool truncate);
-bool eval_const_cond(COND *cond);
 
 extern bool volatile  mqh_used;
 

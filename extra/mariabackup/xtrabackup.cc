@@ -4,7 +4,7 @@ MariaBackup: hot backup tool for InnoDB
 Originally Created 3/3/2009 Yasufumi Kinoshita
 Written by Alexey Kopytov, Aleksandr Kuzminsky, Stewart Smith, Vadim Tkachenko,
 Yasufumi Kinoshita, Ignacio Nin and Baron Schwartz.
-(c) 2017, 2018, MariaDB Corporation.
+(c) 2017, 2019, MariaDB Corporation.
 Portions written by Marko Mäkelä.
 
 This program is free software; you can redistribute it and/or modify
@@ -221,8 +221,6 @@ const char *defaults_group = "mysqld";
 #define HA_INNOBASE_ROWS_IN_TABLE 10000 /* to get optimization right */
 #define HA_INNOBASE_RANGE_COUNT	  100
 
-ulong 	innobase_large_page_size = 0;
-
 /* The default values for the following, type long or longlong, start-up
 parameters are declared in mysqld.cc: */
 
@@ -242,7 +240,6 @@ char*	innobase_data_home_dir;
 char*	innobase_data_file_path;
 
 my_bool innobase_use_doublewrite;
-my_bool innobase_use_large_pages;
 my_bool	innobase_file_per_table;
 my_bool innobase_locks_unsafe_for_binlog;
 my_bool innobase_rollback_on_timeout;
@@ -362,9 +359,6 @@ struct ddl_tracker_t {
 };
 
 static ddl_tracker_t ddl_tracker;
-
-/* Whether xtrabackup_binlog_info should be created on recovery */
-static bool recover_binlog_info;
 
 /* Simple datasink creation tracking...add datasinks in the reverse order you
 want them destroyed. */
@@ -830,6 +824,7 @@ enum options_xtrabackup
   OPT_XTRA_TABLES_EXCLUDE,
   OPT_XTRA_DATABASES_EXCLUDE,
   OPT_PROTOCOL,
+  OPT_INNODB_COMPRESSION_LEVEL,
   OPT_LOCK_DDL_PER_TABLE,
   OPT_ROCKSDB_DATADIR,
   OPT_BACKUP_ROCKSDB,
@@ -1358,6 +1353,11 @@ struct my_option xb_server_options[] =
    (G_PTR*)&srv_undo_tablespaces, (G_PTR*)&srv_undo_tablespaces,
    0, GET_ULONG, REQUIRED_ARG, 0, 0, 126, 0, 1, 0},
 
+  {"innodb_compression_level", OPT_INNODB_COMPRESSION_LEVEL,
+   "Compression level used for zlib compression.",
+   (G_PTR*)&page_zip_level, (G_PTR*)&page_zip_level,
+   0, GET_UINT, REQUIRED_ARG, 6, 0, 9, 0, 0, 0},
+
   {"defaults_group", OPT_DEFAULTS_GROUP, "defaults group in config file (default \"mysqld\").",
    (G_PTR*) &defaults_group, (G_PTR*) &defaults_group,
    0, GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
@@ -1695,6 +1695,10 @@ xb_get_one_option(int optid,
     ADD_PRINT_PARAM_OPT(innodb_checksum_algorithm_names[srv_checksum_algorithm]);
     break;
 
+  case OPT_INNODB_COMPRESSION_LEVEL:
+    ADD_PRINT_PARAM_OPT(page_zip_level);
+    break;
+
   case OPT_INNODB_BUFFER_POOL_FILENAME:
 
     ADD_PRINT_PARAM_OPT(innobase_buffer_pool_filename);
@@ -1908,8 +1912,6 @@ static bool innodb_init_param()
 
 	srv_use_doublewrite_buf = (ibool) innobase_use_doublewrite;
 
-	os_use_large_pages = (ibool) innobase_use_large_pages;
-	os_large_page_size = (ulint) innobase_large_page_size;
 	row_rollback_on_timeout = (ibool) innobase_rollback_on_timeout;
 
 	srv_file_per_table = (my_bool) innobase_file_per_table;
@@ -1980,10 +1982,8 @@ static bool innodb_init()
 	}
 
 	if (err != DB_SUCCESS) {
-		msg("mariabackup: innodb_init() returned %d (%s).",
+		die("mariabackup: innodb_init() returned %d (%s).",
 		    err, ut_strerr(err));
-		innodb_shutdown();
-		return(TRUE);
 	}
 
 	return(FALSE);
@@ -2000,7 +2000,6 @@ xtrabackup_read_metadata(char *filename)
 {
 	FILE	*fp;
 	my_bool	 r = TRUE;
-	int	 t;
 
 	fp = fopen(filename,"r");
 	if(!fp) {
@@ -2031,9 +2030,6 @@ xtrabackup_read_metadata(char *filename)
 	}
 	/* Optional fields */
 
-	if (fscanf(fp, "recover_binlog_info = %d\n", &t) == 1) {
-		recover_binlog_info = (t == 1);
-	}
 end:
 	fclose(fp);
 
@@ -2052,13 +2048,11 @@ xtrabackup_print_metadata(char *buf, size_t buf_len)
 		 "backup_type = %s\n"
 		 "from_lsn = " UINT64PF "\n"
 		 "to_lsn = " UINT64PF "\n"
-		 "last_lsn = " UINT64PF "\n"
-		 "recover_binlog_info = %d\n",
+		 "last_lsn = " UINT64PF "\n",
 		 metadata_type,
 		 metadata_from_lsn,
 		 metadata_to_lsn,
-		 metadata_last_lsn,
-		 MY_TEST(opt_binlog_info == BINLOG_INFO_LOCKLESS));
+		 metadata_last_lsn);
 }
 
 /***********************************************************************
@@ -2401,8 +2395,9 @@ check_if_skip_table(
 		return(FALSE);
 	}
 
-	strncpy(buf, dbname, FN_REFLEN);
-	buf[tbname - 1 - dbname] = 0;
+	strncpy(buf, dbname, FN_REFLEN - 1);
+	buf[FN_REFLEN - 1] = '\0';
+	buf[tbname - 1 - dbname] = '\0';
 
 	const skip_database_check_result skip_database =
 			check_if_skip_database(buf);
@@ -2410,7 +2405,6 @@ check_if_skip_table(
 		return (TRUE);
 	}
 
-	buf[FN_REFLEN - 1] = '\0';
 	buf[tbname - 1 - dbname] = '.';
 
 	/* Check if there's a suffix in the table name. If so, truncate it. We
@@ -2546,8 +2540,9 @@ xtrabackup_copy_datafile(fil_node_t* node, uint thread_n, const char *dest_name=
 		goto error;
 	}
 
-	strncpy(dst_name, (dest_name)?dest_name : cursor.rel_path, sizeof(dst_name));
-
+	strncpy(dst_name, dest_name ? dest_name : cursor.rel_path,
+		sizeof dst_name - 1);
+	dst_name[sizeof dst_name - 1] = '\0';
 
 	/* Setup the page write filter */
 	if (xtrabackup_incremental) {
@@ -2746,8 +2741,13 @@ static bool xtrabackup_copy_logfile(bool last = false)
 			my_sleep(1000);
 		}
 
-		start_lsn = (lsn == start_lsn)
-			? 0 : xtrabackup_copy_log(start_lsn, lsn, last);
+		if (lsn == start_lsn) {
+			start_lsn = 0;
+		} else {
+			mutex_enter(&recv_sys->mutex);
+			start_lsn = xtrabackup_copy_log(start_lsn, lsn, last);
+			mutex_exit(&recv_sys->mutex);
+		}
 
 		log_mutex_exit();
 
@@ -2866,7 +2866,8 @@ static void dbug_mariabackup_event(const char *event,const char *key)
 		if (slash)
 			*slash = '_';
 	} else {
-		strncpy(envvar, event, sizeof(envvar));
+		strncpy(envvar, event, sizeof envvar - 1);
+		envvar[sizeof envvar - 1] = '\0';
 	}
 	char *sql = getenv(envvar);
 	if (sql) {
@@ -3277,7 +3278,7 @@ static dberr_t xb_assign_undo_space_start()
 	byte*		page;
 	bool		ret;
 	dberr_t		error = DB_SUCCESS;
-	ulint		space, page_no __attribute__((unused));
+	ulint		space;
 	int n_retries = 5;
 
 	if (srv_undo_tablespaces == 0) {
@@ -3319,10 +3320,10 @@ retry:
 	/* 0th slot always points to system tablespace.
 	1st slot should point to first undotablespace which is minimum. */
 
-	page_no = mach_read_ulint(TRX_SYS + TRX_SYS_RSEGS
-				  + TRX_SYS_RSEG_SLOT_SIZE
-				  + TRX_SYS_RSEG_PAGE_NO + page, MLOG_4BYTES);
-	ut_ad(page_no != FIL_NULL);
+	ut_ad(mach_read_from_4(TRX_SYS + TRX_SYS_RSEGS
+			       + TRX_SYS_RSEG_SLOT_SIZE
+			       + TRX_SYS_RSEG_PAGE_NO + page)
+	      != FIL_NULL);
 
 	space = mach_read_ulint(TRX_SYS + TRX_SYS_RSEGS
 				+ TRX_SYS_RSEG_SLOT_SIZE
@@ -3977,9 +3978,7 @@ static bool xtrabackup_backup_low()
 
 /** Implement --backup
 @return	whether the operation succeeded */
-static
-bool
-xtrabackup_backup_func()
+static bool xtrabackup_backup_func()
 {
 	MY_STAT			 stat_info;
 	uint			 i;
@@ -4112,37 +4111,24 @@ fail:
 
 	log_mutex_enter();
 
+reread_log_header:
 	dberr_t err = recv_find_max_checkpoint(&max_cp_field);
 
 	if (err != DB_SUCCESS) {
-log_fail:
+		msg("Error: cannot read redo log header");
 		log_mutex_exit();
 		goto fail;
 	}
 
 	if (log_sys.log.format == 0) {
-old_format:
-		msg("Error: cannot process redo log"
-		    " before MariaDB 10.2.2");
+		msg("Error: cannot process redo log before MariaDB 10.2.2");
 		log_mutex_exit();
-		goto log_fail;
+		goto fail;
 	}
 
 	const byte* buf = log_sys.checkpoint_buf;
-
-reread_log_header:
-	checkpoint_lsn_start = log_sys.log.lsn;
+	checkpoint_lsn_start = log_sys.log.get_lsn();
 	checkpoint_no_start = log_sys.next_checkpoint_no;
-
-	err = recv_find_max_checkpoint(&max_cp_field);
-
-	if (err != DB_SUCCESS) {
-		goto log_fail;
-	}
-
-	if (log_sys.log.format == 0) {
-		goto old_format;
-	}
 
 	log_header_read(max_cp_field);
 
@@ -4189,6 +4175,12 @@ reread_log_header:
 	mach_write_to_8(log_hdr + LOG_CHECKPOINT_OFFSET,
 			(checkpoint_lsn_start & (OS_FILE_LOG_BLOCK_SIZE - 1))
 			| LOG_FILE_HDR_SIZE);
+	/* The least significant bits of LOG_CHECKPOINT_OFFSET must be
+	stored correctly in the copy of the ib_logfile. The most significant
+	bits, which identify the start offset of the log block in the file,
+	we did choose freely, as LOG_FILE_HDR_SIZE. */
+	ut_ad(!((log_sys.log.get_lsn() ^ checkpoint_lsn_start)
+		& (OS_FILE_LOG_BLOCK_SIZE - 1)));
 	log_block_set_checksum(log_hdr,
 			       log_block_calc_checksum_crc32(log_hdr));
 	/* Write checkpoint page 1 and two empty log pages before the
@@ -4483,7 +4475,8 @@ void backup_fix_ddl(void)
 		const char *extension = is_remote ? ".isl" : ".ibd";
 		name.append(extension);
 		char buf[FN_REFLEN];
-		strncpy(buf, name.c_str(), sizeof(buf));
+		strncpy(buf, name.c_str(), sizeof buf - 1);
+		buf[sizeof buf - 1] = '\0';
 		const char *dbname = buf;
 		char *p = strchr(buf, '/');
 		if (p == 0) {
@@ -4841,7 +4834,8 @@ xtrabackup_apply_delta(
 	}
 	dst_path[strlen(dst_path) - 6] = '\0';
 
-	strncpy(space_name, filename, FN_REFLEN);
+	strncpy(space_name, filename, FN_REFLEN - 1);
+	space_name[FN_REFLEN - 1] = '\0';
 	space_name[strlen(space_name) -  6] = 0;
 
 	if (!get_meta_path(src_path, meta_path)) {
@@ -5225,6 +5219,7 @@ next_file_item_1:
 						    fileinfo.name, NULL))
 					{
 						os_file_closedir(dbdir);
+						os_file_closedir(dir);
 						return(FALSE);
 					}
 				}
@@ -5267,27 +5262,6 @@ innodb_free_param()
 	free_tmpdir(&mysql_tmpdir_list);
 }
 
-
-/** Store the current binary log coordinates in a specified file.
-@param[in]	filename	file name
-@param[in]	name		binary log file name
-@param[in]	pos		binary log file position
-@return whether the operation succeeded */
-static bool
-store_binlog_info(const char* filename, const char* name, ulonglong pos)
-{
-	FILE *fp = fopen(filename, "w");
-
-	if (!fp) {
-		msg("mariabackup: failed to open '%s'", filename);
-		return(false);
-	}
-
-	fprintf(fp, "%s\t%llu\n", name, pos);
-	fclose(fp);
-
-	return(true);
-}
 
 /** Check if file exists*/
 static bool file_exists(std::string name)
@@ -5387,8 +5361,7 @@ static ibool prepare_handle_del_files(const char *datadir, const char *db, const
 
 /** Implement --prepare
 @return	whether the operation succeeded */
-static bool
-xtrabackup_prepare_func(char** argv)
+static bool xtrabackup_prepare_func(char** argv)
 {
 	char			 metadata_path[FN_REFLEN];
 
@@ -5554,20 +5527,6 @@ xtrabackup_prepare_func(char** argv)
 		msg("Last binlog file %s, position %lld",
 		    trx_sys.recovered_binlog_filename,
 		    longlong(trx_sys.recovered_binlog_offset));
-
-		/* output to xtrabackup_binlog_pos_innodb and
-		   (if backup_safe_binlog_info was available on
-		   the server) to xtrabackup_binlog_info. In the
-		   latter case xtrabackup_binlog_pos_innodb
-		   becomes redundant and is created only for
-		   compatibility. */
-		ok = store_binlog_info("xtrabackup_binlog_pos_innodb",
-				       trx_sys.recovered_binlog_filename,
-				       trx_sys.recovered_binlog_offset)
-		  && (!recover_binlog_info
-		      || store_binlog_info(XTRABACKUP_BINLOG_INFO,
-					   trx_sys.recovered_binlog_filename,
-					   trx_sys.recovered_binlog_offset));
 	}
 
 	/* Check whether the log is applied enough or not. */
