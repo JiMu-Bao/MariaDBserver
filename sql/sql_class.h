@@ -13,7 +13,7 @@
 
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
-   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA */
+   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA */
 
 #ifndef SQL_CLASS_INCLUDED
 #define SQL_CLASS_INCLUDED
@@ -38,6 +38,7 @@
 #include "thr_timer.h"
 #include "thr_malloc.h"
 #include "log_slow.h"      /* LOG_SLOW_DISABLE_... */
+#include <my_tree.h>
 
 #include "sql_digest_stream.h"            // sql_digest_state
 
@@ -3254,6 +3255,7 @@ public:
     added to the list of audit plugins which are currently in use.
   */
   unsigned long audit_class_mask[MYSQL_AUDIT_CLASS_MASK_SIZE];
+  int audit_plugin_version;
 #endif
 
 #if defined(ENABLED_DEBUG_SYNC)
@@ -3263,17 +3265,12 @@ public:
   /**
     @param id                thread identifier
     @param is_wsrep_applier  thread type
-    @param skip_lock         instruct whether @c LOCK_global_system_variables
-                             is already locked, to not acquire it then.
   */
-  THD(my_thread_id id, bool is_wsrep_applier= false, bool skip_lock= false);
+  THD(my_thread_id id, bool is_wsrep_applier= false);
 
   ~THD();
-  /**
-    @param skip_lock         instruct whether @c LOCK_global_system_variables
-                             is already locked, to not acquire it then.
-  */
-  void init(bool skip_lock= false);
+
+  void init();
   /*
     Initialize memory roots necessary for query processing and (!)
     pre-allocate memory for it. We can't do that in THD constructor because

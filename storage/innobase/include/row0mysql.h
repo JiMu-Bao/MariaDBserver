@@ -13,7 +13,7 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License along with
 this program; if not, write to the Free Software Foundation, Inc.,
-51 Franklin Street, Suite 500, Boston, MA 02110-1335 USA
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1335 USA
 
 *****************************************************************************/
 
@@ -887,7 +887,7 @@ void innobase_free_row_for_vcol(VCOL_STORAGE *storage);
 @return the field filled with computed value */
 dfield_t*
 innobase_get_computed_value(
-	const dtuple_t*		row,
+	dtuple_t*		row,
 	const dict_v_col_t*	col,
 	const dict_index_t*	index,
 	mem_heap_t**		local_heap,

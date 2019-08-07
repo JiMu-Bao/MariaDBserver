@@ -14,7 +14,7 @@
 
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
-   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
+   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1335  USA */
 
 #include "sql_plist.h"
 #include "sql_list.h"                           /* Sql_alloc */
@@ -55,6 +55,7 @@ class Virtual_column_info;
 class Table_triggers_list;
 class TMP_TABLE_PARAM;
 class SEQUENCE;
+struct Name_resolution_context;
 
 /*
   Used to identify NESTED_JOIN structures within a join (applicable only to
@@ -1949,6 +1950,7 @@ struct TABLE_LIST
     table_name= *table_name_arg;
     alias= (alias_arg ? *alias_arg : *table_name_arg);
     lock_type= lock_type_arg;
+    updating= lock_type >= TL_WRITE_ALLOW_WRITE;
     mdl_request.init(MDL_key::TABLE, db.str, table_name.str, mdl_type,
                      MDL_TRANSACTION);
   }
@@ -2000,6 +2002,7 @@ struct TABLE_LIST
   LEX_CSTRING   alias;
   const char    *option;                /* Used by cache index  */
   Item		*on_expr;		/* Used with outer join */
+  Name_resolution_context *on_context;  /* For ON expressions */
 
   Item          *sj_on_expr;
   /*
@@ -2745,9 +2748,31 @@ public:
 };
 
 
+#define JOIN_OP_NEST       1
+#define REBALANCED_NEST    2
+
 typedef struct st_nested_join
 {
   List<TABLE_LIST>  join_list;       /* list of elements in the nested join */
+  /*
+    Currently the valid values for nest type are:
+    JOIN_OP_NEST - for nest created for JOIN operation used as an operand in
+    a join expression, contains 2 elements;
+    JOIN_OP_NEST | REBALANCED_NEST -  nest created after tree re-balancing
+    in st_select_lex::add_cross_joined_table(), contains 1 element;
+    0 - for all other nests.
+    Examples:
+    1.  SELECT * FROM t1 JOIN t2 LEFT JOIN t3 ON t2.a=t3.a;
+    Here the nest created for LEFT JOIN at first has nest_type==JOIN_OP_NEST.
+    After re-balancing in st_select_lex::add_cross_joined_table() this nest
+    has nest_type==JOIN_OP_NEST | REBALANCED_NEST. The nest for JOIN created
+    in st_select_lex::add_cross_joined_table() has nest_type== JOIN_OP_NEST.
+    2.  SELECT * FROM t1 JOIN (t2 LEFT JOIN t3 ON t2.a=t3.a)
+    Here the nest created for LEFT JOIN has nest_type==0, because it's not
+    an operand in a join expression. The nest created for JOIN has nest_type
+    set to JOIN_OP_NEST.
+  */
+  uint nest_type;
   /* 
     Bitmap of tables within this nested join (including those embedded within
     its children), including tables removed by table elimination.

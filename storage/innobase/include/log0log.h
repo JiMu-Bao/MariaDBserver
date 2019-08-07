@@ -20,7 +20,7 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License along with
 this program; if not, write to the Free Software Foundation, Inc.,
-51 Franklin Street, Suite 500, Boston, MA 02110-1335 USA
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1335 USA
 
 *****************************************************************************/
 
@@ -193,23 +193,13 @@ blocks from the buffer pool: it only checks what is lsn of the oldest
 modification in the pool, and writes information about the lsn in
 log files. Use log_make_checkpoint_at() to flush also the pool.
 @param[in]	sync		whether to wait for the write to complete
-@param[in]	write_always	force a write even if no log
-has been generated since the latest checkpoint
 @return true if success, false if a checkpoint write was already running */
-bool
-log_checkpoint(
-	bool	sync,
-	bool	write_always);
+bool log_checkpoint(bool sync);
 
 /** Make a checkpoint at or after a specified LSN.
 @param[in]	lsn		the log sequence number, or LSN_MAX
-for the latest LSN
-@param[in]	write_always	force a write even if no log
-has been generated since the latest checkpoint */
-void
-log_make_checkpoint_at(
-	lsn_t			lsn,
-	bool			write_always);
+for the latest LSN */
+void log_make_checkpoint_at(lsn_t lsn);
 
 /****************************************************************//**
 Makes a checkpoint at the latest lsn and writes it to first page of each
@@ -537,7 +527,7 @@ struct log_t{
 					to the first half before freeing/resizing
 					must be undertaken. */
 	bool		first_in_use;	/*!< true if buf points to the first
-					half of the aligned(buf_ptr), false
+					half of the buffer, false
 					if the second half */
 	ulong		max_buf_free;	/*!< recommended maximum value of
 					buf_free for the buffer in use, after
@@ -621,8 +611,6 @@ struct log_t{
 					later; this is advanced when a flush
 					operation is completed to all the log
 					groups */
-	volatile bool	is_extending;	/*!< this is set to true during extend
-					the log buffer size */
 	lsn_t		write_lsn;	/*!< last written lsn */
 	lsn_t		current_flush_lsn;/*!< end lsn for the current running
 					write + flush operation */

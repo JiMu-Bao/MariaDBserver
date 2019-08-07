@@ -11,7 +11,7 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
+# Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1335  USA
 
 MACRO(CHECK_SYSTEMD)
   IF(UNIX)
@@ -28,13 +28,9 @@ MACRO(CHECK_SYSTEMD)
           ENDIF()
         ENDIF()
         IF(HAVE_DLOPEN)
-          SET(LIBSYSTEMD ${LIBSYSTEMD_LIBRARIES})
-          #SET(CMAKE_REQUIRED_FLAGS ${LIBSYSTEMD_CFLAGS})
-          SET(MYSQLD_LINK_FLAGS "${MYSQLD_LINK_FLAGS} ${LIBSYSTEMD_LDFLAGS}")
+          SET(LIBSYSTEMD ${LIBSYSTEMD_LDFLAGS} ${LIBSYSTEMD_LIBRARIES})
         ELSE()
-          SET(LIBSYSTEMD ${LIBSYSTEMD_STATIC_LIBRARIES})
-          #SET(CMAKE_REQUIRED_FLAGS ${LIBSYSTEMD_STATIC_CFLAGS})
-          SET(MYSQLD_LINK_FLAGS "${MYSQLD_LINK_FLAGS} ${LIBSYSTEMD_STATIC_LDFLAGS}")
+          SET(LIBSYSTEMD ${LIBSYSTEMD_STATIC_LDFLAGS} ${LIBSYSTEMD_STATIC_LIBRARIES})
         ENDIF()
       ELSE()
         SET(LIBSYSTEMD systemd)

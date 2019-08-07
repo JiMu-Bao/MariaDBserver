@@ -3448,6 +3448,36 @@ t1	CREATE TABLE `t1` (
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1
 DROP TABLE t1;
 #
+# MDEV-11015 Assertion failed: precision > 0 in decimal_bin_size upon SELECT with DISTINCT, CAST and other functions
+#
+CREATE TABLE t1 (b LONGBLOB);
+INSERT IGNORE INTO t1 VALUES ('foo'),('bar');
+SELECT DISTINCT - GREATEST( b, CAST( NULL AS DATETIME ) ) AS f FROM t1;
+f
+NULL
+Warnings:
+Warning	1292	Incorrect datetime value: 'foo'
+Warning	1292	Incorrect datetime value: 'bar'
+DROP TABLE t1;
+CREATE TABLE t1 (b LONGBLOB);
+INSERT IGNORE INTO t1 VALUES ('foo'),('bar');
+SELECT DISTINCT - GREATEST( b, CAST( NULL AS TIME) ) AS f FROM t1;
+f
+NULL
+Warnings:
+Warning	1292	Truncated incorrect time value: 'foo'
+Warning	1292	Truncated incorrect time value: 'bar'
+DROP TABLE t1;
+CREATE TABLE t1 (b LONGBLOB);
+INSERT IGNORE INTO t1 VALUES ('foo'),('bar');
+SELECT DISTINCT - GREATEST( b, CAST( NULL AS DATE) ) AS f FROM t1;
+f
+NULL
+Warnings:
+Warning	1292	Incorrect datetime value: 'foo'
+Warning	1292	Incorrect datetime value: 'bar'
+DROP TABLE t1;
+#
 # End of 10.1 tests
 #
 #
@@ -3884,6 +3914,21 @@ t1	CREATE TABLE `t1` (
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1
 DROP TABLE t1;
 SET sql_mode=DEFAULT;
+#
+# MDEV-18456 Assertion `item->maybe_null' failed in Type_handler_temporal_result::make_sort_key
+#
+CREATE TABLE t1 (t TIME NOT NULL);
+INSERT INTO t1 VALUES ('00:20:11'),('14:52:05');
+SELECT GREATEST('9999', t) FROM t1 ORDER BY 1;
+GREATEST('9999', t)
+NULL
+NULL
+Warnings:
+Warning	1292	Truncated incorrect time value: '9999'
+Warning	1292	Truncated incorrect time value: '9999'
+Warning	1292	Truncated incorrect time value: '9999'
+Warning	1292	Truncated incorrect time value: '9999'
+DROP TABLE t1;
 #
 # End of 10.3 tests
 #

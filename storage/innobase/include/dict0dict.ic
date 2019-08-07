@@ -13,7 +13,7 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License along with
 this program; if not, write to the Free Software Foundation, Inc.,
-51 Franklin Street, Suite 500, Boston, MA 02110-1335 USA
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1335 USA
 
 *****************************************************************************/
 
@@ -1412,6 +1412,9 @@ void
 dict_free_vc_templ(
 	dict_vcol_templ_t*	vc_templ)
 {
+	UT_DELETE_ARRAY(vc_templ->default_rec);
+	vc_templ->default_rec = NULL;
+
 	if (vc_templ->vtempl != NULL) {
 		ut_ad(vc_templ->n_v_col > 0);
 		for (ulint i = 0; i < vc_templ->n_col

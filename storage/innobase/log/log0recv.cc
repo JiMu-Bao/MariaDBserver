@@ -14,7 +14,7 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License along with
 this program; if not, write to the Free Software Foundation, Inc.,
-51 Franklin Street, Suite 500, Boston, MA 02110-1335 USA
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1335 USA
 
 *****************************************************************************/
 
@@ -61,7 +61,7 @@ Created 9/20/1997 Heikki Tuuri
 
 /** Log records are stored in the hash table in chunks at most of this size;
 this must be less than srv_page_size as it is stored in the buffer pool */
-#define RECV_DATA_BLOCK_SIZE	(MEM_MAX_ALLOC_IN_BUF - sizeof(recv_data_t))
+#define RECV_DATA_BLOCK_SIZE	(MEM_MAX_ALLOC_IN_BUF - sizeof(recv_data_t) - REDZONE_SIZE)
 
 /** Read-ahead area in applying log records to file pages */
 #define RECV_READ_AHEAD_AREA	32
@@ -856,7 +856,7 @@ recv_sys_init()
 	recv_sys->buf_size = RECV_PARSING_BUF_SIZE;
 
 	recv_sys->addr_hash = hash_create(size / 512);
-	recv_sys->progress_time = ut_time();
+	recv_sys->progress_time = time(NULL);
 	recv_max_page_lsn = 0;
 
 	/* Call the constructor for recv_sys_t::dblwr member */
@@ -1000,7 +1000,7 @@ fail:
 		}
 	}
 
-	if (recv_sys->report(ut_time())) {
+	if (recv_sys->report(time(NULL))) {
 		ib::info() << "Read redo log up to LSN=" << *start_lsn;
 		service_manager_extend_timeout(INNODB_EXTEND_TIMEOUT_INTERVAL,
 			"Read redo log up to LSN=" LSN_PF,
@@ -2152,7 +2152,7 @@ skip_log:
 	mtr.discard_modifications();
 	mtr.commit();
 
-	ib_time_t time = ut_time();
+	time_t now = time(NULL);
 
 	mutex_enter(&recv_sys->mutex);
 
@@ -2165,12 +2165,38 @@ skip_log:
 
 	ut_a(recv_sys->n_addrs > 0);
 	if (ulint n = --recv_sys->n_addrs) {
-		if (recv_sys->report(time)) {
+		if (recv_sys->report(now)) {
 			ib::info() << "To recover: " << n << " pages from log";
 			service_manager_extend_timeout(
 				INNODB_EXTEND_TIMEOUT_INTERVAL, "To recover: " ULINTPF " pages from log", n);
 		}
 	}
+}
+
+/** Reduces recv_sys->n_addrs for the corrupted page.
+This function should called when srv_force_recovery > 0.
+@param[in]	page_id	page id of the corrupted page */
+void recv_recover_corrupt_page(page_id_t page_id)
+{
+	ut_ad(srv_force_recovery);
+	mutex_enter(&recv_sys->mutex);
+
+	if (!recv_sys->apply_log_recs) {
+		mutex_exit(&recv_sys->mutex);
+		return;
+	}
+
+	recv_addr_t* recv_addr = recv_get_fil_addr_struct(
+			page_id.space(), page_id.page_no());
+
+	ut_ad(recv_addr->state != RECV_WILL_NOT_READ);
+
+	if (recv_addr->state != RECV_BEING_PROCESSED
+	    && recv_addr->state != RECV_PROCESSED) {
+		recv_sys->n_addrs--;
+	}
+
+	mutex_exit(&recv_sys->mutex);
 }
 
 /** Apply any buffered redo log to a page that was just read from a data file.
@@ -2808,11 +2834,6 @@ loop:
 
 			if (lsn == checkpoint_lsn) {
 				if (recv_sys->mlog_checkpoint_lsn) {
-					/* At recv_reset_logs() we may
-					write a duplicate MLOG_CHECKPOINT
-					for the same checkpoint LSN. Thus
-					recv_sys->mlog_checkpoint_lsn
-					can differ from the current LSN. */
 					ut_ad(recv_sys->mlog_checkpoint_lsn
 					      <= recv_sys->recovered_lsn);
 					break;
@@ -3941,49 +3962,6 @@ recv_recovery_rollback_active(void)
 		trx_rollback_is_active = true;
 		os_thread_create(trx_rollback_all_recovered, 0, 0);
 	}
-}
-
-/******************************************************//**
-Resets the logs. The contents of log files will be lost! */
-void
-recv_reset_logs(
-/*============*/
-	lsn_t		lsn)		/*!< in: reset to this lsn
-					rounded up to be divisible by
-					OS_FILE_LOG_BLOCK_SIZE, after
-					which we add
-					LOG_BLOCK_HDR_SIZE */
-{
-	ut_ad(log_mutex_own());
-
-	log_sys.lsn = ut_uint64_align_up(lsn, OS_FILE_LOG_BLOCK_SIZE);
-
-	log_sys.log.set_lsn(log_sys.lsn);
-	log_sys.log.set_lsn_offset(LOG_FILE_HDR_SIZE);
-
-	log_sys.buf_next_to_write = 0;
-	log_sys.write_lsn = log_sys.lsn;
-
-	log_sys.next_checkpoint_no = 0;
-	log_sys.last_checkpoint_lsn = 0;
-
-	memset(log_sys.buf, 0, srv_log_buffer_size);
-	log_block_init(log_sys.buf, log_sys.lsn);
-	log_block_set_first_rec_group(log_sys.buf, LOG_BLOCK_HDR_SIZE);
-
-	log_sys.buf_free = LOG_BLOCK_HDR_SIZE;
-	log_sys.lsn += LOG_BLOCK_HDR_SIZE;
-
-	MONITOR_SET(MONITOR_LSN_CHECKPOINT_AGE,
-		    (log_sys.lsn - log_sys.last_checkpoint_lsn));
-
-	log_mutex_exit();
-
-	/* Reset the checkpoint fields in logs */
-
-	log_make_checkpoint_at(LSN_MAX, TRUE);
-
-	log_mutex_enter();
 }
 
 /** Find a doublewrite copy of a page.

@@ -13,7 +13,7 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License along with
 this program; if not, write to the Free Software Foundation, Inc.,
-51 Franklin Street, Suite 500, Boston, MA 02110-1335 USA
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1335 USA
 
 *****************************************************************************/
 
@@ -918,10 +918,11 @@ public:
 					on dict_operation_lock. Protected
 					by dict_operation_lock. */
 
-	time_t		start_time;	/*!< time the state last time became
-					TRX_STATE_ACTIVE */
-	ib_uint64_t	start_time_micro; /*!< start time of transaction in
-					microseconds */
+	/** wall-clock time of the latest transition to TRX_STATE_ACTIVE;
+	used for diagnostic purposes only */
+	time_t		start_time;
+	/** microsecond_interval_timer() of transaction start */
+	ulonglong	start_time_micro;
 	lsn_t		commit_lsn;	/*!< lsn at the time of the commit */
 	table_id_t	table_id;	/*!< Table to drop iff dict_operation
 					== TRX_DICT_OP_TABLE, or 0. */

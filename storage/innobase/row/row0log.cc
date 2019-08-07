@@ -13,7 +13,7 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License along with
 this program; if not, write to the Free Software Foundation, Inc.,
-51 Franklin Street, Suite 500, Boston, MA 02110-1335 USA
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1335 USA
 
 *****************************************************************************/
 
@@ -434,8 +434,7 @@ row_log_online_op(
 		if (log_tmp_is_encrypted()) {
 			if (!log_tmp_block_encrypt(
 				    buf, srv_sort_buf_size,
-				    log->crypt_tail, byte_offset,
-				    index->table->space_id)) {
+				    log->crypt_tail, byte_offset)) {
 				log->error = DB_DECRYPTION_FAILED;
 				goto write_failed;
 			}
@@ -445,11 +444,12 @@ row_log_online_op(
 		}
 
 		log->tail.blocks++;
-		if (!os_file_write(
+		if (os_file_write(
 			    request,
 			    "(modification log)",
 			    log->fd,
-			    buf, byte_offset, srv_sort_buf_size)) {
+			    buf, byte_offset, srv_sort_buf_size)
+		    != DB_SUCCESS) {
 write_failed:
 			/* We set the flag directly instead of invoking
 			dict_set_corrupted_index_cache_only(index) here,
@@ -583,11 +583,12 @@ row_log_table_close_func(
 		}
 
 		log->tail.blocks++;
-		if (!os_file_write(
+		if (os_file_write(
 			    request,
 			    "(modification log)",
 			    log->fd,
-			    buf, byte_offset, srv_sort_buf_size)) {
+			    buf, byte_offset, srv_sort_buf_size)
+		    != DB_SUCCESS) {
 write_failed:
 			log->error = DB_ONLINE_LOG_TOO_BIG;
 		}
@@ -2862,9 +2863,9 @@ all_done:
 		IORequest		request(IORequest::READ);
 		byte*			buf = index->online_log->head.block;
 
-		if (!os_file_read_no_error_handling(
+		if (os_file_read_no_error_handling(
 			    request, index->online_log->fd,
-			    buf, ofs, srv_sort_buf_size, 0)) {
+			    buf, ofs, srv_sort_buf_size, 0) != DB_SUCCESS) {
 			ib::error()
 				<< "Unable to read temporary file"
 				" for table " << index->table->name;
@@ -2874,8 +2875,7 @@ all_done:
 		if (log_tmp_is_encrypted()) {
 			if (!log_tmp_block_decrypt(
 				    buf, srv_sort_buf_size,
-				    index->online_log->crypt_head,
-				    ofs, index->table->space_id)) {
+				    index->online_log->crypt_head, ofs)) {
 				error = DB_DECRYPTION_FAILED;
 				goto func_exit;
 			}
@@ -3109,7 +3109,7 @@ row_log_table_apply(
 
 	stage->begin_phase_log_table();
 
-	ut_ad(!rw_lock_own(dict_operation_lock, RW_LOCK_S));
+	ut_ad(!rw_lock_own(&dict_operation_lock, RW_LOCK_S));
 	clust_index = dict_table_get_first_index(old_table);
 
 	if (clust_index->online_log->n_rows == 0) {
@@ -3765,9 +3765,9 @@ all_done:
 
 		byte*	buf = index->online_log->head.block;
 
-		if (!os_file_read_no_error_handling(
+		if (os_file_read_no_error_handling(
 			    request, index->online_log->fd,
-			    buf, ofs, srv_sort_buf_size, 0)) {
+			    buf, ofs, srv_sort_buf_size, 0) != DB_SUCCESS) {
 			ib::error()
 				<< "Unable to read temporary file"
 				" for index " << index->name;
@@ -3777,8 +3777,7 @@ all_done:
 		if (log_tmp_is_encrypted()) {
 			if (!log_tmp_block_decrypt(
 				    buf, srv_sort_buf_size,
-				    index->online_log->crypt_head,
-				    ofs, index->table->space_id)) {
+				    index->online_log->crypt_head, ofs)) {
 				error = DB_DECRYPTION_FAILED;
 				goto func_exit;
 			}

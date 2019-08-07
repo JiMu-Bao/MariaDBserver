@@ -13,7 +13,7 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License along with
 this program; if not, write to the Free Software Foundation, Inc.,
-51 Franklin Street, Suite 500, Boston, MA 02110-1335 USA
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1335 USA
 
 *****************************************************************************/
 
@@ -955,3 +955,10 @@ ib_push_frm_error(
 	TABLE*		table,		/*!< in: MySQL table */
 	ulint		n_keys,		/*!< in: InnoDB #keys */
 	bool		push_warning);	/*!< in: print warning ? */
+
+/** Check each index part length whether they not exceed the max limit
+@param[in]	max_field_len	maximum allowed key part length
+@param[in]	key		MariaDB key definition
+@return true if index column length exceeds limit */
+MY_ATTRIBUTE((warn_unused_result))
+bool too_big_key_part_length(size_t max_field_len, const KEY& key);

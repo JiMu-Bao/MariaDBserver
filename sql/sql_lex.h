@@ -1,5 +1,5 @@
-/* Copyright (c) 2000, 2015, Oracle and/or its affiliates.
-   Copyright (c) 2010, 2018, MariaDB Corporation
+/* Copyright (c) 2000, 2019, Oracle and/or its affiliates.
+   Copyright (c) 2010, 2019, MariaDB Corporation
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -12,7 +12,7 @@
 
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
-   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
+   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1335  USA */
 
 /**
   @defgroup Semantic_Analysis Semantic Analysis
@@ -801,6 +801,12 @@ public:
   */
   Item_int *intersect_mark;
   /**
+     TRUE if the unit contained TVC at the top level that has been wrapped
+     into SELECT:
+     VALUES (v1) ... (vn) => SELECT * FROM (VALUES (v1) ... (vn)) as tvc
+  */
+  bool with_wrapped_tvc;
+  /**
     Pointer to 'last' select, or pointer to select where we stored
     global parameters for union.
 
@@ -896,6 +902,7 @@ public:
   bool union_needs_tmp_table();
 
   void set_unique_exclude();
+  bool check_distinct_in_union();
 
   friend struct LEX;
   friend int subselect_union_engine::exec();
@@ -1219,10 +1226,12 @@ public:
   TABLE_LIST *end_nested_join(THD *thd);
   TABLE_LIST *nest_last_join(THD *thd);
   void add_joined_table(TABLE_LIST *table);
+  bool add_cross_joined_table(TABLE_LIST *left_op, TABLE_LIST *right_op,
+                              bool straight_fl);
   TABLE_LIST *convert_right_join();
   List<Item>* get_item_list();
   ulong get_table_join_options();
-  void set_lock_for_tables(thr_lock_type lock_type);
+  void set_lock_for_tables(thr_lock_type lock_type, bool for_update);
   inline void init_order()
   {
     order_list.elements= 0;
@@ -1976,6 +1985,38 @@ public:
     DBUG_ASSERT(accessed_table >= 0 && accessed_table < STMT_ACCESS_TABLE_COUNT);
 
     DBUG_RETURN((stmt_accessed_table_flag & (1U << accessed_table)) != 0);
+  }
+
+  /**
+    Checks either a trans/non trans temporary table is being accessed while
+    executing a statement.
+
+    @return
+      @retval TRUE  if a temporary table is being accessed
+      @retval FALSE otherwise
+  */
+  inline bool stmt_accessed_temp_table()
+  {
+    DBUG_ENTER("THD::stmt_accessed_temp_table");
+    DBUG_RETURN(stmt_accessed_non_trans_temp_table() ||
+                stmt_accessed_trans_temp_table());
+  }
+
+  /**
+    Checks if a temporary transactional table is being accessed while executing
+    a statement.
+
+    @return
+      @retval TRUE  if a temporary transactional table is being accessed
+      @retval FALSE otherwise
+  */
+  inline bool stmt_accessed_trans_temp_table()
+  {
+    DBUG_ENTER("THD::stmt_accessed_trans_temp_table");
+
+    DBUG_RETURN((stmt_accessed_table_flag &
+                ((1U << STMT_READS_TEMP_TRANS_TABLE) |
+                 (1U << STMT_WRITES_TEMP_TRANS_TABLE))) != 0);
   }
 
   /**
@@ -3284,9 +3325,9 @@ public:
     return context_stack.push_front(context, mem_root);
   }
 
-  void pop_context()
+  Name_resolution_context *pop_context()
   {
-    context_stack.pop();
+    return context_stack.pop();
   }
 
   bool copy_db_to(LEX_CSTRING *to);
@@ -4060,15 +4101,18 @@ public:
 class Yacc_state
 {
 public:
-  Yacc_state()
-  {
-    reset();
-  }
+  Yacc_state() : yacc_yyss(NULL), yacc_yyvs(NULL) { reset(); }
 
   void reset()
   {
-    yacc_yyss= NULL;
-    yacc_yyvs= NULL;
+    if (yacc_yyss != NULL) {
+      my_free(yacc_yyss);
+      yacc_yyss = NULL;
+    }
+    if (yacc_yyvs != NULL) {
+      my_free(yacc_yyvs);
+      yacc_yyvs = NULL;
+    }
     m_set_signal_info.clear();
     m_lock_type= TL_READ_DEFAULT;
     m_mdl_type= MDL_SHARED_READ;

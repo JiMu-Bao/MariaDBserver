@@ -13,7 +13,7 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License along with
 this program; if not, write to the Free Software Foundation, Inc.,
-51 Franklin Street, Suite 500, Boston, MA 02110-1335 USA
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1335 USA
 
 *****************************************************************************/
 
@@ -645,6 +645,31 @@ public:
 					/*!< whether fil_space_create()
 					has issued a warning about
 					potential space_id reuse */
+
+	/** Trigger a call to fil_node_t::read_page0()
+	@param[in]	id	tablespace identifier
+	@return	tablespace
+	@retval	NULL	if the tablespace does not exist or cannot be read */
+	fil_space_t* read_page0(ulint id);
+
+	/** Return the next fil_space_t from key rotation list.
+	Once started, the caller must keep calling this until it returns NULL.
+	fil_space_acquire() and fil_space_release() are invoked here which
+	blocks a concurrent operation from dropping the tablespace.
+	@param[in]      prev_space      Previous tablespace or NULL to start
+					from beginning of fil_system->rotation
+					list
+	@param[in]      recheck         recheck of the tablespace is needed or
+					still encryption thread does write page0
+					for it
+	@param[in]	key_version	key version of the key state thread
+	If NULL, use the first fil_space_t on fil_system->space_list.
+	@return pointer to the next fil_space_t.
+	@retval NULL if this was the last */
+	fil_space_t* keyrotate_next(
+		fil_space_t*	prev_space,
+		bool		remove,
+		uint		key_version);
 };
 
 /** The tablespace memory cache. */
@@ -839,11 +864,12 @@ fil_space_acquire() and fil_space_t::release() are invoked here which
 blocks a concurrent operation from dropping the tablespace.
 @param[in,out]	prev_space	Pointer to the previous fil_space_t.
 If NULL, use the first fil_space_t on fil_system.space_list.
+@param[in]	remove		Whether to remove the previous tablespace from
+				the rotation list
 @return pointer to the next fil_space_t.
 @retval NULL if this was the last*/
 fil_space_t*
-fil_space_keyrotate_next(
-	fil_space_t*	prev_space)
+fil_space_keyrotate_next(fil_space_t* prev_space, bool remove)
 	MY_ATTRIBUTE((warn_unused_result));
 
 /********************************************************//**
@@ -877,8 +903,7 @@ but only by InnoDB table locks, which may be broken by
 lock_remove_all_on_table().)
 @param[in]	table	persistent table
 checked @return whether the table is accessible */
-bool
-fil_table_accessible(const dict_table_t* table)
+bool fil_table_accessible(const dict_table_t* table)
 	MY_ATTRIBUTE((warn_unused_result, nonnull));
 
 /** Delete a tablespace and associated .ibd file.

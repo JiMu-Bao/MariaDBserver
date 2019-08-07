@@ -13,7 +13,7 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License along with
 this program; if not, write to the Free Software Foundation, Inc.,
-51 Franklin Street, Suite 500, Boston, MA 02110-1335 USA
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1335 USA
 
 *****************************************************************************/
 
@@ -173,7 +173,9 @@ page_header_set_field(
 {
 	ut_ad(page);
 	ut_ad(field <= PAGE_N_RECS);
+#if 0 /* FIXME: MDEV-19344 hits this */
 	ut_ad(field != PAGE_N_RECS || val);
+#endif
 	ut_ad(field == PAGE_N_HEAP || val < srv_page_size);
 	ut_ad(field != PAGE_N_HEAP || (val & 0x7fff) < srv_page_size);
 

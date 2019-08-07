@@ -13,7 +13,7 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License along with
 this program; if not, write to the Free Software Foundation, Inc.,
-51 Franklin Street, Suite 500, Boston, MA 02110-1335 USA
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1335 USA
 
 *****************************************************************************/
 
@@ -1045,6 +1045,7 @@ BtrBulk::finish(dberr_t	err)
 
 	ut_ad(!sync_check_iterate(dict_sync_check()));
 
-	ut_ad(err != DB_SUCCESS || btr_validate_index(m_index, NULL, false));
+	ut_ad(err != DB_SUCCESS
+	      || btr_validate_index(m_index, NULL, false) == DB_SUCCESS);
 	return(err);
 }

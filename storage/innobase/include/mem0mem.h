@@ -13,7 +13,7 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License along with
 this program; if not, write to the Free Software Foundation, Inc.,
-51 Franklin Street, Suite 500, Boston, MA 02110-1335 USA
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1335 USA
 
 *****************************************************************************/
 
@@ -73,7 +73,7 @@ allocations of small buffers. */
 
 /** If a memory heap is allowed to grow into the buffer pool, the following
 is the maximum size for a single allocated buffer: */
-#define MEM_MAX_ALLOC_IN_BUF		(srv_page_size - 200)
+#define MEM_MAX_ALLOC_IN_BUF		(srv_page_size - 200 + REDZONE_SIZE)
 
 /** Space needed when allocating for a user a field of length N.
 The space is allocated only in multiples of UNIV_MEM_ALIGNMENT.  */

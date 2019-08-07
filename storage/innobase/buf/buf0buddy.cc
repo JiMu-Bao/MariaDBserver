@@ -13,7 +13,7 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License along with
 this program; if not, write to the Free Software Foundation, Inc.,
-51 Franklin Street, Suite 500, Boston, MA 02110-1335 USA
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1335 USA
 
 *****************************************************************************/
 
@@ -171,13 +171,13 @@ buf_buddy_get(
 struct	CheckZipFree {
 	CheckZipFree(ulint i) : m_i(i) {}
 
-	void	operator()(const buf_buddy_free_t* elem) const
+	void operator()(const buf_buddy_free_t* elem) const
 	{
-		ut_a(buf_buddy_stamp_is_free(elem));
-		ut_a(elem->stamp.size <= m_i);
+		ut_ad(buf_buddy_stamp_is_free(elem));
+		ut_ad(elem->stamp.size <= m_i);
 	}
 
-	ulint		m_i;
+	const ulint m_i;
 };
 
 /** Validate a buddy list.
@@ -189,8 +189,7 @@ buf_buddy_list_validate(
 	const buf_pool_t*	buf_pool,
 	ulint			i)
 {
-	CheckZipFree	check(i);
-	ut_list_validate(buf_pool->zip_free[i], check);
+	ut_list_validate(buf_pool->zip_free[i], CheckZipFree(i));
 }
 
 /**********************************************************************//**
@@ -636,7 +635,7 @@ buf_buddy_relocate(
 
 	if (buf_page_can_relocate(bpage)) {
 		/* Relocate the compressed page. */
-		uintmax_t	usec = ut_time_us(NULL);
+		const ulonglong ns = my_interval_timer();
 
 		ut_a(bpage->zip.data == src);
 
@@ -652,7 +651,7 @@ buf_buddy_relocate(
 
 		buf_buddy_stat_t*	buddy_stat = &buf_pool->buddy_stat[i];
 		buddy_stat->relocated++;
-		buddy_stat->relocated_usec += ut_time_us(NULL) - usec;
+		buddy_stat->relocated_usec+= (my_interval_timer() - ns) / 1000;
 		return(true);
 	}
 

@@ -13,7 +13,7 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License along with
 this program; if not, write to the Free Software Foundation, Inc.,
-51 Franklin Street, Suite 500, Boston, MA 02110-1335 USA
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1335 USA
 
 *****************************************************************************/
 
@@ -84,7 +84,7 @@ ib_wqueue_timedwait(
 /*================*/
 					/* out: work item or NULL on timeout*/
 	ib_wqueue_t*	wq,		/* in: work queue */
-	ib_time_t	wait_in_usecs); /* in: wait time in micro seconds */
+	ulint		wait_in_usecs); /* in: wait time in micro seconds */
 
 /********************************************************************
 Return first item on work queue or NULL if queue is empty

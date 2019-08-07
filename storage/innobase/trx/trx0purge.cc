@@ -13,7 +13,7 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License along with
 this program; if not, write to the Free Software Foundation, Inc.,
-51 Franklin Street, Suite 500, Boston, MA 02110-1335 USA
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1335 USA
 
 *****************************************************************************/
 
@@ -137,7 +137,8 @@ purge_graph_build()
 
 	trx_t* trx = trx_create();
 	ut_ad(!trx->id);
-	trx->start_time = ut_time();
+	trx->start_time = time(NULL);
+	trx->start_time_micro = microsecond_interval_timer();
 	trx->state = TRX_STATE_ACTIVE;
 	trx->op_info = "purge trx";
 
@@ -192,10 +193,6 @@ void purge_sys_t::close()
   trx->state= TRX_STATE_NOT_STARTED;
   trx_free(trx);
   rw_lock_free(&latch);
-  /* rw_lock_free() already called latch.~rw_lock_t(); tame the
-  debug assertions when the destructor will be called once more. */
-  ut_ad(latch.magic_n == 0);
-  ut_d(latch.magic_n= RW_LOCK_MAGIC_N);
   mutex_free(&pq_mutex);
   os_event_destroy(event);
 }

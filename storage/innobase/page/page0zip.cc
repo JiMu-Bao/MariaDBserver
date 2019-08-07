@@ -14,7 +14,7 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License along with
 this program; if not, write to the Free Software Foundation, Inc.,
-51 Franklin Street, Suite 500, Boston, MA 02110-1335 USA
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1335 USA
 
 *****************************************************************************/
 
@@ -1274,7 +1274,7 @@ page_zip_compress(
 	byte*			storage;	/* storage of uncompressed
 						columns */
 	index_id_t		ind_id;
-	uintmax_t		usec = ut_time_us(NULL);
+	const ulonglong		ns = my_interval_timer();
 #ifdef PAGE_ZIP_COMPRESS_DBG
 	FILE*			logfile = NULL;
 #endif
@@ -1561,7 +1561,7 @@ err_exit:
 			dict_index_zip_failure(index);
 		}
 
-		uintmax_t	time_diff = ut_time_us(NULL) - usec;
+		const uint64_t time_diff = (my_interval_timer() - ns) / 1000;
 		page_zip_stat[page_zip->ssize - 1].compressed_usec
 			+= time_diff;
 		if (cmp_per_index_enabled) {
@@ -1627,7 +1627,7 @@ err_exit:
 		fclose(logfile);
 	}
 #endif /* PAGE_ZIP_COMPRESS_DBG */
-	uintmax_t	time_diff = ut_time_us(NULL) - usec;
+	const uint64_t time_diff = (my_interval_timer() - ns) / 1000;
 	page_zip_stat[page_zip->ssize - 1].compressed_ok++;
 	page_zip_stat[page_zip->ssize - 1].compressed_usec += time_diff;
 	if (cmp_per_index_enabled) {
@@ -3250,13 +3250,13 @@ page_zip_decompress(
 				page header fields that should not change
 				after page creation */
 {
-	uintmax_t	usec = ut_time_us(NULL);
+	const ulonglong ns = my_interval_timer();
 
 	if (!page_zip_decompress_low(page_zip, page, all)) {
 		return(FALSE);
 	}
 
-	uintmax_t	time_diff = ut_time_us(NULL) - usec;
+	const uint64_t time_diff = (my_interval_timer() - ns) / 1000;
 	page_zip_stat[page_zip->ssize - 1].decompressed++;
 	page_zip_stat[page_zip->ssize - 1].decompressed_usec += time_diff;
 

@@ -14,7 +14,7 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License along with
 this program; if not, write to the Free Software Foundation, Inc.,
-51 Franklin Street, Suite 500, Boston, MA 02110-1335 USA
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1335 USA
 
 *****************************************************************************/
 
@@ -2441,7 +2441,7 @@ page_cleaner_flush_pages_recommendation(
 	if (prev_lsn == 0) {
 		/* First time around. */
 		prev_lsn = cur_lsn;
-		prev_time = ut_time();
+		prev_time = time(NULL);
 		return(0);
 	}
 
@@ -2451,7 +2451,7 @@ page_cleaner_flush_pages_recommendation(
 
 	sum_pages += last_pages_in;
 
-	time_t	curr_time = ut_time();
+	time_t	curr_time = time(NULL);
 	double	time_elapsed = difftime(curr_time, prev_time);
 
 	/* We update our variables every srv_flushing_avg_loops
@@ -3567,7 +3567,7 @@ buf_flush_request_force(
 
 /** Functor to validate the flush list. */
 struct	Check {
-	void	operator()(const buf_page_t* elem)
+	void operator()(const buf_page_t* elem) const
 	{
 		ut_a(elem->in_flush_list);
 	}
@@ -3584,11 +3584,10 @@ buf_flush_validate_low(
 {
 	buf_page_t*		bpage;
 	const ib_rbt_node_t*	rnode = NULL;
-	Check			check;
 
 	ut_ad(buf_flush_list_mutex_own(buf_pool));
 
-	ut_list_validate(buf_pool->flush_list, check);
+	ut_list_validate(buf_pool->flush_list, Check());
 
 	bpage = UT_LIST_GET_FIRST(buf_pool->flush_list);
 

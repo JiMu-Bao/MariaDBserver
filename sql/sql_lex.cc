@@ -12,7 +12,7 @@
 
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
-   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
+   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1335  USA */
 
 
 /* A lexical scanner on a temporary buffer with a yacc interface */
@@ -2292,6 +2292,7 @@ void st_select_lex_unit::init_query()
   with_element= 0;
   columns_are_renamed= false;
   intersect_mark= NULL;
+  with_wrapped_tvc= false;
 }
 
 void st_select_lex::init_query()
@@ -2989,14 +2990,13 @@ void st_select_lex::print_limit(THD *thd,
   if (item && unit->global_parameters() == this)
   {
     Item_subselect::subs_type subs_type= item->substype();
-    if (subs_type == Item_subselect::EXISTS_SUBS ||
-        subs_type == Item_subselect::IN_SUBS ||
+    if (subs_type == Item_subselect::IN_SUBS ||
         subs_type == Item_subselect::ALL_SUBS)
     {
       return;
     }
   }
-  if (explicit_limit)
+  if (explicit_limit && select_limit)
   {
     str->append(STRING_WITH_LEN(" limit "));
     if (offset_limit)
@@ -3144,7 +3144,7 @@ void Query_tables_list::destroy_query_tables_list()
 */
 
 LEX::LEX()
-  : explain(NULL), result(0), arena_for_set_stmt(0), mem_root_for_set_stmt(0),
+  : explain(NULL), result(0), part_info(NULL), arena_for_set_stmt(0), mem_root_for_set_stmt(0),
     option_type(OPT_DEFAULT), context_analysis_only(0), sphead(0),
     default_used(0), is_lex_started(0), limit_rows_examined_cnt(ULONGLONG_MAX)
 {
@@ -3427,6 +3427,19 @@ void st_select_lex_unit::set_limit(st_select_lex *sl)
 bool st_select_lex_unit::union_needs_tmp_table()
 {
   if (with_element && with_element->is_recursive)
+    return true;
+  if (!with_wrapped_tvc)
+  {
+    for (st_select_lex *sl= first_select(); sl; sl=sl->next_select())
+    {
+      if (sl->tvc && sl->tvc->to_be_wrapped_as_with_tail())
+      {
+        with_wrapped_tvc= true;
+        break;
+      }
+    }
+  }
+  if (with_wrapped_tvc)
     return true;
   return union_distinct != NULL ||
     global_parameters()->order_list.elements != 0 ||
@@ -4731,7 +4744,10 @@ void SELECT_LEX::increase_derived_records(ha_rows records)
     break;
   default:
     // usual UNION
-    result->est_records+= records;
+    if (HA_ROWS_MAX - records > result->est_records)
+      result->est_records+= records;
+    else
+      result->est_records= HA_ROWS_MAX;
     break;
   }
 }
@@ -7254,8 +7270,7 @@ bool LEX::set_system_variable(THD *thd, enum_var_type var_type,
 {
   sys_var *tmp;
   if (unlikely(check_reserved_words(name1)) ||
-      unlikely(!(tmp= find_sys_var_ex(thd, name2->str, name2->length, true,
-                                      false))))
+      unlikely(!(tmp= find_sys_var(thd, name2->str, name2->length, true))))
   {
     my_error(ER_UNKNOWN_STRUCTURED_VARIABLE, MYF(0),
              (int) name1->length, name1->str);
@@ -7649,7 +7664,7 @@ int set_statement_var_if_exists(THD *thd, const char *var_name,
     my_error(ER_SP_BADSTATEMENT, MYF(0), "[NO]WAIT");
     return 1;
   }
-  if ((sysvar= find_sys_var_ex(thd, var_name, var_name_length, true, false)))
+  if ((sysvar= find_sys_var(thd, var_name, var_name_length, true)))
   {
     Item *item= new (thd->mem_root) Item_uint(thd, value);
     set_var *var= new (thd->mem_root) set_var(thd, OPT_SESSION, sysvar,
@@ -8239,6 +8254,8 @@ bool LEX::tvc_finalize()
                                   current_select->options))))
     return true;
   many_values.empty();
+  if (!current_select->master_unit()->fake_select_lex)
+    current_select->master_unit()->add_fake_select_lex(thd);
   return false;
 }
 

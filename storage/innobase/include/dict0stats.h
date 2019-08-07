@@ -13,7 +13,7 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License along with
 this program; if not, write to the Free Software Foundation, Inc.,
-51 Franklin Street, Suite 500, Boston, MA 02110-1335 USA
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1335 USA
 
 *****************************************************************************/
 
@@ -203,7 +203,7 @@ rolled back only in the case of error, but not freed.
 dberr_t
 dict_stats_save_index_stat(
 	dict_index_t*	index,
-	ib_time_t	last_update,
+	time_t		last_update,
 	const char*	stat_name,
 	ib_uint64_t	stat_value,
 	ib_uint64_t*	sample_size,

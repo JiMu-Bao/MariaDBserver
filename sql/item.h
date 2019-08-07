@@ -15,7 +15,7 @@
 
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
-   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA */
+   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA */
 
 
 #ifdef USE_PRAGMA_INTERFACE
@@ -1057,6 +1057,13 @@ public:
   longlong val_int_unsigned_typecast_from_decimal();
   longlong val_int_unsigned_typecast_from_int();
   longlong val_int_unsigned_typecast_from_str();
+
+  /**
+    Get a value for CAST(x AS UNSIGNED).
+    Huge positive unsigned values are converted to negative complements.
+  */
+  longlong val_int_signed_typecast_from_int();
+
   /*
     This is just a shortcut to avoid the cast. You should still use
     unsigned_flag to check the sign of the item.
@@ -5246,6 +5253,7 @@ public:
   void update_used_tables();
   table_map not_null_tables() const;
   bool const_item() const { return used_tables() == 0; }
+  TABLE *get_null_ref_table() const { return null_ref_table; }
   bool walk(Item_processor processor, bool walk_subquery, void *arg)
   { 
     return (*ref)->walk(processor, walk_subquery, arg) ||
@@ -6179,21 +6187,44 @@ public:
 
 class Item_cache_real: public Item_cache
 {
+protected:
   double value;
 public:
-  Item_cache_real(THD *thd): Item_cache(thd, &type_handler_double),
-    value(0) {}
-
+  Item_cache_real(THD *thd, const Type_handler *h)
+   :Item_cache(thd, h),
+    value(0)
+  {}
   double val_real();
   longlong val_int();
-  String* val_str(String *str);
   my_decimal *val_decimal(my_decimal *);
   bool get_date(MYSQL_TIME *ltime, ulonglong fuzzydate)
   { return get_date_from_real(ltime, fuzzydate); }
   bool cache_value();
   Item *convert_to_basic_const_item(THD *thd);
+};
+
+
+class Item_cache_double: public Item_cache_real
+{
+public:
+  Item_cache_double(THD *thd)
+   :Item_cache_real(thd, &type_handler_double)
+  { }
+  String* val_str(String *str);
   Item *get_copy(THD *thd)
-  { return get_item_copy<Item_cache_real>(thd, this); }
+  { return get_item_copy<Item_cache_double>(thd, this); }
+};
+
+
+class Item_cache_float: public Item_cache_real
+{
+public:
+  Item_cache_float(THD *thd)
+   :Item_cache_real(thd, &type_handler_float)
+  { }
+  String* val_str(String *str);
+  Item *get_copy(THD *thd)
+  { return get_item_copy<Item_cache_float>(thd, this); }
 };
 
 

@@ -12,7 +12,7 @@
 
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
-   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
+   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1335  USA */
 
 
 /* Function with list databases, tables or fields */
@@ -2305,6 +2305,16 @@ int show_create_table(THD *thd, TABLE_LIST *table_list, String *packet,
           !(sql_mode & MODE_NO_FIELD_OPTIONS))
         packet->append(STRING_WITH_LEN(" AUTO_INCREMENT"));
     }
+
+    if (field->comment.length)
+    {
+      packet->append(STRING_WITH_LEN(" COMMENT "));
+      append_unescaped(packet, field->comment.str, field->comment.length);
+    }
+
+    append_create_options(thd, packet, field->option_list, check_options,
+                          hton->field_options);
+    
     if (field->check_constraint)
     {
       StringBuffer<MAX_FIELD_WIDTH> str(&my_charset_utf8mb4_general_ci);
@@ -2314,13 +2324,6 @@ int show_create_table(THD *thd, TABLE_LIST *table_list, String *packet,
       packet->append(STRING_WITH_LEN(")"));
     }
 
-    if (field->comment.length)
-    {
-      packet->append(STRING_WITH_LEN(" COMMENT "));
-      append_unescaped(packet, field->comment.str, field->comment.length);
-    }
-    append_create_options(thd, packet, field->option_list, check_options,
-                          hton->field_options);
   }
 
   key_info= table->key_info;
@@ -5633,7 +5636,7 @@ static int get_schema_tables_record(THD *thd, TABLE_LIST *tables,
       }
       if (file->ha_table_flags() & (HA_HAS_OLD_CHECKSUM | HA_HAS_NEW_CHECKSUM))
       {
-        table->field[18]->store((longlong) file->checksum(), TRUE);
+        table->field[18]->store((longlong) file->stats.checksum, TRUE);
         table->field[18]->set_notnull();
       }
     }
@@ -5998,9 +6001,15 @@ static int get_schema_column_record(THD *thd, TABLE_LIST *tables,
     else if (field->flags & VERS_SYSTEM_FIELD)
     {
       if (field->flags & VERS_SYS_START_FLAG)
+      {
         table->field[21]->store(STRING_WITH_LEN("ROW START"), cs);
+        buf.set(STRING_WITH_LEN("STORED GENERATED"), cs);
+      }
       else
+      {
         table->field[21]->store(STRING_WITH_LEN("ROW END"), cs);
+        buf.set(STRING_WITH_LEN("STORED GENERATED"), cs);
+      }
       table->field[21]->set_notnull();
       table->field[20]->store(STRING_WITH_LEN("ALWAYS"), cs);
     }
@@ -8517,7 +8526,6 @@ int mysql_schema_table(THD *thd, LEX *lex, TABLE_LIST *table_list)
     table->alias_name_used= my_strcasecmp(table_alias_charset,
                                           table_list->schema_table_name.str,
                                           table_list->alias.str);
-  table_list->table_name= table->s->table_name;
   table_list->table= table;
   table->next= thd->derived_tables;
   thd->derived_tables= table;

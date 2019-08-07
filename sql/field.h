@@ -14,7 +14,7 @@
 
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
-   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
+   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1335  USA */
 
 /*
   Because of the function make_new_field() all field classes that have static
@@ -4559,6 +4559,10 @@ public:
     *this= *def;
   }
   bool set_compressed(const char *method);
+  bool set_compressed_deprecated(THD *thd, const char *method);
+  bool set_compressed_deprecated_column_attribute(THD *thd,
+                                                  const char *pos,
+                                                  const char *method);
   void set_compression_method(Compression_method *compression_method_arg)
   { compression_method_ptr= compression_method_arg; }
   Compression_method *compression_method() const

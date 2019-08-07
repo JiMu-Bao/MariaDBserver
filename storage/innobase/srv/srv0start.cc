@@ -28,7 +28,7 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License along with
 this program; if not, write to the Free Software Foundation, Inc.,
-51 Franklin Street, Suite 500, Boston, MA 02110-1335 USA
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1335 USA
 
 *****************************************************************************/
 
@@ -47,7 +47,6 @@ Created 2/16/1996 Heikki Tuuri
 
 #include "row0ftsort.h"
 #include "ut0mem.h"
-#include "ut0timer.h"
 #include "mem0mem.h"
 #include "data0data.h"
 #include "data0type.h"
@@ -486,11 +485,32 @@ create_log_files(
 	/* Create a log checkpoint. */
 	log_mutex_enter();
 	if (log_sys.is_encrypted() && !log_crypt_init()) {
-		return(DB_ERROR);
+		return DB_ERROR;
 	}
 	ut_d(recv_no_log_write = false);
-	recv_reset_logs(lsn);
+	log_sys.lsn = ut_uint64_align_up(lsn, OS_FILE_LOG_BLOCK_SIZE);
+
+	log_sys.log.set_lsn(log_sys.lsn);
+	log_sys.log.set_lsn_offset(LOG_FILE_HDR_SIZE);
+
+	log_sys.buf_next_to_write = 0;
+	log_sys.write_lsn = log_sys.lsn;
+
+	log_sys.next_checkpoint_no = 0;
+	log_sys.last_checkpoint_lsn = 0;
+
+	memset(log_sys.buf, 0, srv_log_buffer_size);
+	log_block_init(log_sys.buf, log_sys.lsn);
+	log_block_set_first_rec_group(log_sys.buf, LOG_BLOCK_HDR_SIZE);
+
+	log_sys.buf_free = LOG_BLOCK_HDR_SIZE;
+	log_sys.lsn += LOG_BLOCK_HDR_SIZE;
+
+	MONITOR_SET(MONITOR_LSN_CHECKPOINT_AGE,
+		    (log_sys.lsn - log_sys.last_checkpoint_lsn));
 	log_mutex_exit();
+
+	log_make_checkpoint_at(LSN_MAX);
 
 	return(DB_SUCCESS);
 }
@@ -1687,6 +1707,10 @@ dberr_t srv_start(bool create_new_db)
 
 	srv_log_file_size_requested = srv_log_file_size;
 
+	if (innodb_encrypt_temporary_tables && !log_crypt_init()) {
+		return srv_init_abort(DB_ERROR);
+	}
+
 	if (create_new_db) {
 
 		buf_flush_sync_all_buf_pools();
@@ -2494,36 +2518,6 @@ skip_monitors:
 
 	return(DB_SUCCESS);
 }
-
-#if 0
-/********************************************************************
-Sync all FTS cache before shutdown */
-static
-void
-srv_fts_close(void)
-/*===============*/
-{
-	dict_table_t*	table;
-
-	for (table = UT_LIST_GET_FIRST(dict_sys->table_LRU);
-	     table; table = UT_LIST_GET_NEXT(table_LRU, table)) {
-		fts_t*          fts = table->fts;
-
-		if (fts != NULL) {
-			fts_sync_table(table);
-		}
-	}
-
-	for (table = UT_LIST_GET_FIRST(dict_sys->table_non_LRU);
-	     table; table = UT_LIST_GET_NEXT(table_LRU, table)) {
-		fts_t*          fts = table->fts;
-
-		if (fts != NULL) {
-			fts_sync_table(table);
-		}
-	}
-}
-#endif
 
 /** Shut down background threads that can generate undo log. */
 void srv_shutdown_bg_undo_sources()

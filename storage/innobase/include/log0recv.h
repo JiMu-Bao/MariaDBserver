@@ -13,7 +13,7 @@ FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License along with
 this program; if not, write to the Free Software Foundation, Inc.,
-51 Franklin Street, Suite 500, Boston, MA 02110-1335 USA
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1335 USA
 
 *****************************************************************************/
 
@@ -49,6 +49,11 @@ dberr_t
 recv_find_max_checkpoint(ulint* max_field)
 	MY_ATTRIBUTE((nonnull, warn_unused_result));
 
+/** Reduces recv_sys->n_addrs for the corrupted page.
+This function should called when srv_force_recovery > 0.
+@param[in]	page_id page id of the corrupted page */
+void recv_recover_corrupt_page(page_id_t page_id);
+
 /** Apply any buffered redo log to a page that was just read from a data file.
 @param[in,out]	bpage	buffer pool page */
 ATTRIBUTE_COLD void recv_recover_page(buf_page_t* bpage);
@@ -69,16 +74,6 @@ Initiates the rollback of active transactions. */
 void
 recv_recovery_rollback_active(void);
 /*===============================*/
-/******************************************************//**
-Resets the logs. The contents of log files will be lost! */
-void
-recv_reset_logs(
-/*============*/
-	lsn_t		lsn);		/*!< in: reset to this lsn
-					rounded up to be divisible by
-					OS_FILE_LOG_BLOCK_SIZE, after
-					which we add
-					LOG_BLOCK_HDR_SIZE */
 /** Clean up after recv_sys_init() */
 void
 recv_sys_close();
@@ -255,7 +250,7 @@ struct recv_sys_t{
 				/*!< the LSN of a MLOG_CHECKPOINT
 				record, or 0 if none was parsed */
 	/** the time when progress was last reported */
-	ib_time_t	progress_time;
+	time_t		progress_time;
 	mem_heap_t*	heap;	/*!< memory heap of log records and file
 				addresses*/
 	hash_table_t*	addr_hash;/*!< hash table of file addresses of pages */
@@ -280,7 +275,7 @@ struct recv_sys_t{
 	@param[in]	time	the current time
 	@return	whether progress should be reported
 		(the last report was at least 15 seconds ago) */
-	bool report(ib_time_t time)
+	bool report(time_t time)
 	{
 		if (time - progress_time < 15) {
 			return false;

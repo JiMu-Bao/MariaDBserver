@@ -12,7 +12,7 @@
 
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
-   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA */
+   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1335  USA */
 
 #define MYSQL_LEX 1
 #include "mariadb.h"
@@ -615,7 +615,8 @@ void init_update_queries(void)
                                             CF_CAN_GENERATE_ROW_EVENTS |
                                             CF_OPTIMIZER_TRACE |
                                             CF_CAN_BE_EXPLAINED |
-                                            CF_INSERTS_DATA | CF_SP_BULK_SAFE;
+                                            CF_INSERTS_DATA | CF_SP_BULK_SAFE |
+                                            CF_SP_BULK_OPTIMIZED;
   sql_command_flags[SQLCOM_REPLACE_SELECT]= CF_CHANGES_DATA | CF_REEXECUTION_FRAGILE |
                                             CF_CAN_GENERATE_ROW_EVENTS |
                                             CF_OPTIMIZER_TRACE |
@@ -790,8 +791,6 @@ void init_update_queries(void)
     Note that SQLCOM_RENAME_TABLE should not be in this list!
   */
   sql_command_flags[SQLCOM_CREATE_TABLE]|=    CF_PREOPEN_TMP_TABLES;
-  sql_command_flags[SQLCOM_DROP_TABLE]|=      CF_PREOPEN_TMP_TABLES;
-  sql_command_flags[SQLCOM_DROP_SEQUENCE]|=   CF_PREOPEN_TMP_TABLES;
   sql_command_flags[SQLCOM_CREATE_INDEX]|=    CF_PREOPEN_TMP_TABLES;
   sql_command_flags[SQLCOM_ALTER_TABLE]|=     CF_PREOPEN_TMP_TABLES;
   sql_command_flags[SQLCOM_TRUNCATE]|=        CF_PREOPEN_TMP_TABLES;
@@ -3405,9 +3404,6 @@ mysql_execute_command(THD *thd)
         my_message(ER_SLAVE_IGNORED_TABLE, ER_THD(thd, ER_SLAVE_IGNORED_TABLE),
                    MYF(0));
       }
-      
-      for (table=all_tables; table; table=table->next_global)
-        table->updating= TRUE;
     }
     
     /*
@@ -4066,289 +4062,6 @@ mysql_execute_command(THD *thd)
       res = ha_show_status(thd, lex->create_info.db_type, HA_ENGINE_MUTEX);
       break;
     }
-  case SQLCOM_CREATE_SEQUENCE:
-  case SQLCOM_CREATE_TABLE:
-  {
-    DBUG_ASSERT(first_table == all_tables && first_table != 0);
-    bool link_to_local;
-    TABLE_LIST *create_table= first_table;
-    TABLE_LIST *select_tables= lex->create_last_non_select_table->next_global;
-
-    if (lex->tmp_table())
-    {
-      status_var_decrement(thd->status_var.com_stat[SQLCOM_CREATE_TABLE]);
-      status_var_increment(thd->status_var.com_create_tmp_table);
-    }
-
-    /*
-      Code below (especially in mysql_create_table() and select_create
-      methods) may modify HA_CREATE_INFO structure in LEX, so we have to
-      use a copy of this structure to make execution prepared statement-
-      safe. A shallow copy is enough as this code won't modify any memory
-      referenced from this structure.
-    */
-    Table_specification_st create_info(lex->create_info);
-    /*
-      We need to copy alter_info for the same reasons of re-execution
-      safety, only in case of Alter_info we have to do (almost) a deep
-      copy.
-    */
-    Alter_info alter_info(lex->alter_info, thd->mem_root);
-    if (unlikely(thd->is_fatal_error))
-    {
-      /* If out of memory when creating a copy of alter_info. */
-      res= 1;
-      goto end_with_restore_list;
-    }
-
-    /* Check privileges */
-    if ((res= create_table_precheck(thd, select_tables, create_table)))
-      goto end_with_restore_list;
-
-    /* Might have been updated in create_table_precheck */
-    create_info.alias= create_table->alias;
-
-    /* Fix names if symlinked or relocated tables */
-    if (append_file_to_dir(thd, &create_info.data_file_name,
-			   &create_table->table_name) ||
-	append_file_to_dir(thd, &create_info.index_file_name,
-			   &create_table->table_name))
-      goto end_with_restore_list;
-
-    /*
-      If no engine type was given, work out the default now
-      rather than at parse-time.
-    */
-    if (!(create_info.used_fields & HA_CREATE_USED_ENGINE))
-      create_info.use_default_db_type(thd);
-
-    /*
-      If we are using SET CHARSET without DEFAULT, add an implicit
-      DEFAULT to not confuse old users. (This may change).
-    */
-    if ((create_info.used_fields &
-	 (HA_CREATE_USED_DEFAULT_CHARSET | HA_CREATE_USED_CHARSET)) ==
-	HA_CREATE_USED_CHARSET)
-    {
-      create_info.used_fields&= ~HA_CREATE_USED_CHARSET;
-      create_info.used_fields|= HA_CREATE_USED_DEFAULT_CHARSET;
-      create_info.default_table_charset= create_info.table_charset;
-      create_info.table_charset= 0;
-    }
-
-    /*
-      If we are a slave, we should add OR REPLACE if we don't have
-      IF EXISTS. This will help a slave to recover from
-      CREATE TABLE OR EXISTS failures by dropping the table and
-      retrying the create.
-    */
-    if (thd->slave_thread &&
-        slave_ddl_exec_mode_options == SLAVE_EXEC_MODE_IDEMPOTENT &&
-        !lex->create_info.if_not_exists())
-    {
-      create_info.add(DDL_options_st::OPT_OR_REPLACE);
-      create_info.add(DDL_options_st::OPT_OR_REPLACE_SLAVE_GENERATED);
-    }
-
-#ifdef WITH_PARTITION_STORAGE_ENGINE
-    thd->work_part_info= 0;
-    {
-      partition_info *part_info= thd->lex->part_info;
-      if (part_info && !(part_info= part_info->get_clone(thd)))
-      {
-        res= -1;
-        goto end_with_restore_list;
-      }
-      thd->work_part_info= part_info;
-    }
-#endif
-
-    if (select_lex->item_list.elements)		// With select
-    {
-      select_result *result;
-
-      /*
-        CREATE TABLE...IGNORE/REPLACE SELECT... can be unsafe, unless
-        ORDER BY PRIMARY KEY clause is used in SELECT statement. We therefore
-        use row based logging if mixed or row based logging is available.
-        TODO: Check if the order of the output of the select statement is
-        deterministic. Waiting for BUG#42415
-      */
-      if(lex->ignore)
-        lex->set_stmt_unsafe(LEX::BINLOG_STMT_UNSAFE_CREATE_IGNORE_SELECT);
-
-      if(lex->duplicates == DUP_REPLACE)
-        lex->set_stmt_unsafe(LEX::BINLOG_STMT_UNSAFE_CREATE_REPLACE_SELECT);
-
-      /*
-        If:
-        a) we inside an SP and there was NAME_CONST substitution,
-        b) binlogging is on (STMT mode),
-        c) we log the SP as separate statements
-        raise a warning, as it may cause problems
-        (see 'NAME_CONST issues' in 'Binary Logging of Stored Programs')
-       */
-      if (thd->query_name_consts && mysql_bin_log.is_open() &&
-          thd->wsrep_binlog_format() == BINLOG_FORMAT_STMT &&
-          !mysql_bin_log.is_query_in_union(thd, thd->query_id))
-      {
-        List_iterator_fast<Item> it(select_lex->item_list);
-        Item *item;
-        uint splocal_refs= 0;
-        /* Count SP local vars in the top-level SELECT list */
-        while ((item= it++))
-        {
-          if (item->get_item_splocal())
-            splocal_refs++;
-        }
-        /*
-          If it differs from number of NAME_CONST substitution applied,
-          we may have a SOME_FUNC(NAME_CONST()) in the SELECT list,
-          that may cause a problem with binary log (see BUG#35383),
-          raise a warning. 
-        */
-        if (splocal_refs != thd->query_name_consts)
-          push_warning(thd, 
-                       Sql_condition::WARN_LEVEL_WARN,
-                       ER_UNKNOWN_ERROR,
-"Invoked routine ran a statement that may cause problems with "
-"binary log, see 'NAME_CONST issues' in 'Binary Logging of Stored Programs' "
-"section of the manual.");
-      }
-      
-      select_lex->options|= SELECT_NO_UNLOCK;
-      unit->set_limit(select_lex);
-
-      /*
-        Disable non-empty MERGE tables with CREATE...SELECT. Too
-        complicated. See Bug #26379. Empty MERGE tables are read-only
-        and don't allow CREATE...SELECT anyway.
-      */
-      if (create_info.used_fields & HA_CREATE_USED_UNION)
-      {
-        my_error(ER_WRONG_OBJECT, MYF(0), create_table->db.str,
-                 create_table->table_name.str, "BASE TABLE");
-        res= 1;
-        goto end_with_restore_list;
-      }
-
-      /* Copy temporarily the statement flags to thd for lock_table_names() */
-      uint save_thd_create_info_options= thd->lex->create_info.options;
-      thd->lex->create_info.options|= create_info.options;
-      res= open_and_lock_tables(thd, create_info, lex->query_tables, TRUE, 0);
-      thd->lex->create_info.options= save_thd_create_info_options;
-      if (unlikely(res))
-      {
-        /* Got error or warning. Set res to 1 if error */
-        if (!(res= thd->is_error()))
-          my_ok(thd);                           // CREATE ... IF NOT EXISTS
-        goto end_with_restore_list;
-      }
-
-      /* Ensure we don't try to create something from which we select from */
-      if (create_info.or_replace() && !create_info.tmp_table())
-      {
-        TABLE_LIST *duplicate;
-        if (unlikely((duplicate= unique_table(thd, lex->query_tables,
-                                              lex->query_tables->next_global,
-                                              CHECK_DUP_FOR_CREATE |
-                                              CHECK_DUP_SKIP_TEMP_TABLE))))
-        {
-          update_non_unique_table_error(lex->query_tables, "CREATE",
-                                        duplicate);
-          res= TRUE;
-          goto end_with_restore_list;
-        }
-      }
-      {
-        /*
-          Remove target table from main select and name resolution
-          context. This can't be done earlier as it will break view merging in
-          statements like "CREATE TABLE IF NOT EXISTS existing_view SELECT".
-        */
-        lex->unlink_first_table(&link_to_local);
-
-        /* Store reference to table in case of LOCK TABLES */
-        create_info.table= create_table->table;
-
-        /*
-          select_create is currently not re-execution friendly and
-          needs to be created for every execution of a PS/SP.
-          Note: In wsrep-patch, CTAS is handled like a regular transaction.
-        */
-        if (unlikely((result= new (thd->mem_root)
-                      select_create(thd, create_table,
-                                    &create_info,
-                                    &alter_info,
-                                    select_lex->item_list,
-                                    lex->duplicates,
-                                    lex->ignore,
-                                    select_tables))))
-        {
-          /*
-            CREATE from SELECT give its SELECT_LEX for SELECT,
-            and item_list belong to SELECT
-          */
-          if (!(res= handle_select(thd, lex, result, 0)))
-          {
-            if (create_info.tmp_table())
-              thd->variables.option_bits|= OPTION_KEEP_LOG;
-          }
-          delete result;
-        }
-        lex->link_first_table_back(create_table, link_to_local);
-      }
-    }
-    else
-    {
-      /* regular create */
-      if (create_info.like())
-      {
-        /* CREATE TABLE ... LIKE ... */
-        res= mysql_create_like_table(thd, create_table, select_tables,
-                                     &create_info);
-      }
-      else
-      {
-        if (create_info.vers_fix_system_fields(thd, &alter_info, *create_table) ||
-            create_info.vers_check_system_fields(thd, &alter_info, *create_table))
-          goto end_with_restore_list;
-
-        /*
-          In STATEMENT format, we probably have to replicate also temporary
-          tables, like mysql replication does. Also check if the requested
-          engine is allowed/supported.
-        */
-        if (WSREP(thd) &&
-            !check_engine(thd, create_table->db.str, create_table->table_name.str,
-                          &create_info) &&
-            (!thd->is_current_stmt_binlog_format_row() ||
-             !create_info.tmp_table()))
-        {
-	  WSREP_TO_ISOLATION_BEGIN(create_table->db.str, create_table->table_name.str, NULL);
-        }
-        /* Regular CREATE TABLE */
-        res= mysql_create_table(thd, create_table, &create_info, &alter_info);
-      }
-
-      if (!res)
-      {
-        /* So that CREATE TEMPORARY TABLE gets to binlog at commit/rollback */
-        if (create_info.tmp_table())
-          thd->variables.option_bits|= OPTION_KEEP_LOG;
-        /* in case of create temp tables if @@session_track_state_change is
-           ON then send session state notification in OK packet */
-        if(create_info.options & HA_LEX_CREATE_TMP_TABLE)
-        {
-          SESSION_TRACKER_CHANGED(thd, SESSION_STATE_CHANGE_TRACKER, NULL);
-        }
-        my_ok(thd);
-      }
-    }
-
-end_with_restore_list:
-    break;
-  }
   case SQLCOM_CREATE_INDEX:
   case SQLCOM_DROP_INDEX:
   /*
@@ -4601,6 +4314,16 @@ end_with_restore_list:
       res= 0;
 
     unit->set_limit(select_lex);
+    /*
+      We can not use mysql_explain_union() because of parameters of
+      mysql_select in mysql_multi_update so just set the option if needed
+    */
+    if (thd->lex->describe)
+    {
+      select_lex->set_explain_type(FALSE);
+      select_lex->options|= SELECT_DESCRIBE;
+    }
+
     res= mysql_multi_update_prepare(thd);
 
 #ifdef HAVE_REPLICATION
@@ -4814,6 +4537,13 @@ end_with_restore_list:
       */
       /* Skip first table, which is the table we are inserting in */
       TABLE_LIST *second_table= first_table->next_local;
+      /*
+        This is a hack: this leaves select_lex->table_list in an inconsistent
+        state as 'elements' does not contain number of elements in the list.
+        Moreover, if second_table == NULL then 'next' becomes invalid.
+        TODO: fix it by removing the front element (restoring of it should
+        be done properly as well)
+      */
       select_lex->table_list.first= second_table;
       select_lex->context.table_list= 
         select_lex->context.first_name_resolution_table= second_table;
@@ -5011,7 +4741,14 @@ end_with_restore_list:
   case SQLCOM_DROP_SEQUENCE:
   case SQLCOM_DROP_TABLE:
   {
+    int result;
     DBUG_ASSERT(first_table == all_tables && first_table != 0);
+
+    thd->open_options|= HA_OPEN_FOR_REPAIR;
+    result= thd->open_temporary_tables(all_tables);
+    thd->open_options&= ~HA_OPEN_FOR_REPAIR;
+    if (result)
+      goto error;
     if (!lex->tmp_table())
     {
       if (check_table_access(thd, DROP_ACL, all_tables, FALSE, UINT_MAX, FALSE))
@@ -6272,6 +6009,8 @@ end_with_restore_list:
   case SQLCOM_OPTIMIZE:
   case SQLCOM_REPAIR:
   case SQLCOM_TRUNCATE:
+  case SQLCOM_CREATE_TABLE:
+  case SQLCOM_CREATE_SEQUENCE:
   case SQLCOM_ALTER_TABLE:
       DBUG_ASSERT(first_table == all_tables && first_table != 0);
     /* fall through */
@@ -8464,6 +8203,7 @@ TABLE_LIST *st_select_lex::end_nested_join(THD *thd)
   join_list= ptr->join_list;
   embedding= ptr->embedding;
   nested_join= ptr->nested_join;
+  nested_join->nest_type= 0;
   if (nested_join->join_list.elements == 1)
   {
     TABLE_LIST *embedded= nested_join->join_list.head();
@@ -8473,6 +8213,8 @@ TABLE_LIST *st_select_lex::end_nested_join(THD *thd)
     join_list->push_front(embedded, thd->mem_root);
     ptr= embedded;
     embedded->lifted= 1;
+    if (embedded->nested_join)
+      embedded->nested_join->nest_type= 0;
   }
   else if (nested_join->join_list.elements == 0)
   {
@@ -8503,6 +8245,15 @@ TABLE_LIST *st_select_lex::nest_last_join(THD *thd)
   List<TABLE_LIST> *embedded_list;
   DBUG_ENTER("nest_last_join");
 
+  TABLE_LIST *head= join_list->head();
+  if (head->nested_join && head->nested_join->nest_type & REBALANCED_NEST)
+  {
+    List_iterator<TABLE_LIST> li(*join_list);
+    li++;
+    while (li++)
+      li.remove();
+    DBUG_RETURN(head);
+  }
   if (unlikely(!(ptr= (TABLE_LIST*) thd->calloc(ALIGN_SIZE(sizeof(TABLE_LIST))+
                                                 sizeof(NESTED_JOIN)))))
     DBUG_RETURN(0);
@@ -8515,6 +8266,7 @@ TABLE_LIST *st_select_lex::nest_last_join(THD *thd)
   ptr->alias.length= sizeof("(nest_last_join)")-1;
   embedded_list= &nested_join->join_list;
   embedded_list->empty();
+  nested_join->nest_type= JOIN_OP_NEST;
 
   for (uint i=0; i < 2; i++)
   {
@@ -8562,6 +8314,228 @@ void st_select_lex::add_joined_table(TABLE_LIST *table)
   table->join_list= join_list;
   table->embedding= embedding;
   DBUG_VOID_RETURN;
+}
+
+
+/**
+  @brief
+    Create a node for JOIN/INNER JOIN/CROSS JOIN/STRAIGHT_JOIN operation
+
+  @param left_op     the node for the left operand constructed by the parser
+  @param right_op    the node for the right operand constructed by the parser
+  @param straight_fl TRUE if STRAIGHT_JOIN is used
+
+  @retval
+    false on success
+    true  otherwise
+
+  @details
+
+    JOIN operator can be left-associative with other join operators in one
+    context and right-associative in another context.
+
+    In this query
+       SELECT * FROM t1 JOIN t2 LEFT JOIN t3 ON t2.a=t3.a  (Q1)
+    JOIN is left-associative and the query Q1 is interpreted as
+       SELECT * FROM (t1 JOIN t2) LEFT JOIN t3 ON t2.a=t3.a.
+    While in this query
+       SELECT * FROM t1 JOIN t2 LEFT JOIN t3 ON t2.a=t3.a ON t1.b=t2.b (Q2)
+    JOIN is right-associative and the query Q2 is interpreted as
+       SELECT * FROM t1 JOIN (t2 LEFT JOIN t3 ON t2.a=t3.a) ON t1.b=t2.b
+
+    JOIN is right-associative if it is used with ON clause or with USING clause.
+    Otherwise it is left-associative.
+    When parsing a join expression with JOIN operator we can't determine
+    whether this operation left or right associative until either we read the
+    corresponding ON clause or we reach the end of the expression. This creates
+    a problem for the parser to build a proper internal representation of the
+    used join expression.
+
+    For Q1 and Q2 the trees representing the used join expressions look like
+
+            LJ - ON                   J - ON
+           /  \                      / \
+          J    t3   (TQ1)          t1   LJ - ON      (TQ2)
+         / \                           /  \
+       t1   t2                       t2    t3
+
+    To build TQ1 the parser has to reduce the expression for JOIN right after
+    it has read the reference to t2. To build TQ2 the parser reduces JOIN
+    when he has read the whole join expression. There is no way to determine
+    whether an early reduction is needed until the whole join expression is
+    read.
+    A solution here is always to do a late reduction. In this case the parser
+    first builds an incorrect tree TQ1* that has to be rebalanced right after
+    it has been constructed.
+
+             J                               LJ - ON
+            / \                             /  \
+          t1   LJ - ON    (TQ1*)    =>     J    t3
+              /  \                        / \
+            t2    t3                    t1   t2
+
+    Actually the transformation is performed over the nodes t1 and LJ before the
+    node for J is created in the function st_select_lex::add_cross_joined_table.
+    The function creates a node for J which replaces the node t2. Then it
+    attaches the nodes t1 and t2 to this newly created node. The node LJ becomes
+    the top node of the tree.
+
+    For the query
+      SELECT * FROM t1 JOIN t2 RIGHT JOIN t3 ON t2.a=t3.a  (Q3)
+    the transformation looks slightly differently because the parser
+    replaces the RIGHT JOIN tree for an equivalent LEFT JOIN tree.
+
+             J                               LJ - ON
+            / \                             /  \
+          t1   LJ - ON    (TQ3*)    =>     J    t2
+              /  \                        / \
+            t3    t2                    t1   t3
+
+    With several left associative JOINs
+      SELECT * FROM t1 JOIN t2 JOIN t3 LEFT JOIN t4 ON t3.a=t4.a (Q4)
+    the newly created node for JOIN replaces the left most node of the tree:
+
+          J1                         LJ - ON
+         /  \                       /  \
+       t1    LJ - ON               J2   t4
+            /  \          =>      /  \
+           J2   t4              J1    t3
+          /  \                 /  \
+        t2    t3             t1    t2
+
+     Here's another example:
+       SELECT *
+       FROM t1 JOIN t2 LEFT JOIN t3 JOIN t4 ON t3.a=t4.a ON t2.b=t3.b (Q5)
+
+          J                       LJ - ON
+         / \                     /   \
+       t1   LJ - ON             J     J - ON
+           /  \          =>    / \   / \
+         t2    J - ON         t1 t2 t3 t4
+              / \
+            t3   t4
+
+     If the transformed nested join node node is a natural join node like in
+     the following query
+       SELECT * FROM t1 JOIN t2 LEFT JOIN t3 USING(a)  (Q6)
+     the transformation additionally has to take care about setting proper
+     references in the field natural_join for both operands of the natural
+     join operation.
+     The function also has to change the name resolution context for ON
+     expressions used in the transformed join expression to take into
+     account the tables of the left_op node.
+*/
+
+bool st_select_lex::add_cross_joined_table(TABLE_LIST *left_op,
+                                           TABLE_LIST *right_op,
+                                           bool straight_fl)
+{
+  DBUG_ENTER("add_cross_joined_table");
+  THD *thd= parent_lex->thd;
+  if (!(right_op->nested_join &&
+	(right_op->nested_join->nest_type & JOIN_OP_NEST)))
+  {
+    /*
+      This handles the cases when the right operand is not a nested join.
+      like in queries
+        SELECT * FROM t1 JOIN t2;
+        SELECT * FROM t1 LEFT JOIN t2 ON t1.a=t2.a JOIN t3
+    */
+    right_op->straight= straight_fl;
+    DBUG_RETURN(false);
+  }
+
+  TABLE_LIST *tbl;
+  List<TABLE_LIST> *jl= &right_op->nested_join->join_list;
+  TABLE_LIST *cj_nest;
+
+  /*
+    Create the node NJ for a new nested join for the future inclusion
+    of left_op in it. Initially the nest is empty.
+  */
+  if (unlikely(!(cj_nest=
+                 (TABLE_LIST*) thd->calloc(ALIGN_SIZE(sizeof(TABLE_LIST))+
+                                           sizeof(NESTED_JOIN)))))
+    DBUG_RETURN(true);
+  cj_nest->nested_join=
+    ((NESTED_JOIN*) ((uchar*) cj_nest + ALIGN_SIZE(sizeof(TABLE_LIST))));
+  cj_nest->nested_join->nest_type= JOIN_OP_NEST;
+  List<TABLE_LIST> *cjl=  &cj_nest->nested_join->join_list;
+  cjl->empty();
+
+  /* Look for the left most node tbl of the right_op tree */
+  for ( ; ; )
+  {
+    TABLE_LIST *pair_tbl= 0;  /* useful only for operands of natural joins */
+
+    List_iterator<TABLE_LIST> li(*jl);
+    tbl= li++;
+
+    /* Expand name resolution context */
+    Name_resolution_context *on_context;
+    if ((on_context= tbl->on_context))
+    {
+      on_context->first_name_resolution_table=
+        left_op->first_leaf_for_name_resolution();
+    }
+
+    if (!(tbl->outer_join & JOIN_TYPE_RIGHT))
+    {
+      pair_tbl= tbl;
+      tbl= li++;
+    }
+    if (tbl->nested_join &&
+        tbl->nested_join->nest_type & JOIN_OP_NEST)
+    {
+      jl= &tbl->nested_join->join_list;
+      continue;
+    }
+
+    /* Replace the tbl node in the tree for the newly created NJ node */
+    cj_nest->outer_join= tbl->outer_join;
+    cj_nest->on_expr= tbl->on_expr;
+    cj_nest->embedding= tbl->embedding;
+    cj_nest->join_list= jl;
+    cj_nest->alias.str= "(nest_last_join)";
+    cj_nest->alias.length= sizeof("(nest_last_join)");
+    li.replace(cj_nest);
+
+    /*
+      If tbl is an operand of a natural join set properly the references
+      in the fields natural_join for both operands of the operation.
+    */
+    if(tbl->embedding && tbl->embedding->is_natural_join)
+    {
+      if (!pair_tbl)
+        pair_tbl= li++;
+      pair_tbl->natural_join= cj_nest;
+      cj_nest->natural_join= pair_tbl;
+    }
+    break;
+  }
+
+  /* Attach tbl as the right operand of NJ */
+  if (unlikely(cjl->push_back(tbl, thd->mem_root)))
+    DBUG_RETURN(true);
+  tbl->outer_join= 0;
+  tbl->on_expr= 0;
+  tbl->straight= straight_fl;
+  tbl->natural_join= 0;
+  tbl->embedding= cj_nest;
+  tbl->join_list= cjl;
+
+  /* Add left_op as the left operand of NJ */
+  if (unlikely(cjl->push_back(left_op, thd->mem_root)))
+    DBUG_RETURN(true);
+  left_op->embedding= cj_nest;
+  left_op->join_list= cjl;
+
+  /*
+    Mark right_op as a rebalanced nested join in order not to
+    create a new top level nested join node.
+  */
+  right_op->nested_join->nest_type|= REBALANCED_NEST;
+  DBUG_RETURN(false);
 }
 
 
@@ -8679,9 +8653,8 @@ bool st_select_lex::add_window_spec(THD *thd,
     query
 */
 
-void st_select_lex::set_lock_for_tables(thr_lock_type lock_type)
+void st_select_lex::set_lock_for_tables(thr_lock_type lock_type, bool for_update)
 {
-  bool for_update= lock_type >= TL_READ_NO_INSERT;
   DBUG_ENTER("set_lock_for_tables");
   DBUG_PRINT("enter", ("lock_type: %d  for_update: %d", lock_type,
 		       for_update));

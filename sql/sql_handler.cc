@@ -12,7 +12,7 @@
 
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
-   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA */
+   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1335  USA */
 
 
 /* HANDLER ... commands - direct access to ISAM */
@@ -683,7 +683,7 @@ mysql_ha_fix_cond_and_key(SQL_HANDLER *handler,
                 HA_ONLY_WHOLE_INDEX))
       {
         my_error(ER_KEY_DOESNT_SUPPORT, MYF(0),
-                 table->file->index_type(handler->keyno), keyinfo->name);
+                 table->file->index_type(handler->keyno), keyinfo->name.str);
         return 1;
       }
 
